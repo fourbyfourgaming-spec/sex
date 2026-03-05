@@ -346,35 +346,45 @@
     // Called server-side equivalent: we call the Edge Fn with the target email
     // The Edge Fn looks up their subscriptions and sends Web Push
     async function sendPushNotif(toEmail, title, body, tag, icon) {
-      if (!window.sb || !toEmail) return;
-      // Use global SB_URL constant defined at top of Supabase block
-      var SB_URL = (typeof window.SB_URL !== 'undefined' ? window.SB_URL : '') ||
-                   'https://hafjrxixytudodnuptky.supabase.co';
-      if (!SB_URL) return;
+      if (!toEmail) return;
+      var SB_URL  = (typeof window.SB_URL  !== 'undefined' ? window.SB_URL  : '') || 'https://hafjrxixytudodnuptky.supabase.co';
+      var SB_ANON = (typeof window.SB_ANON !== 'undefined' ? window.SB_ANON : '') || '';
+      var endpoint = SB_URL + '/functions/v1/push-notify';
 
-      try {
-        var res = await fetch(SB_URL + '/functions/v1/push-notify', {
-          method:  'POST',
-          headers: {
-            'Content-Type':  'application/json',
-            'Authorization': 'Bearer ' + (window.SB_ANON || '')
-          },
-          body: JSON.stringify({
-            to_email: toEmail,
-            title:    title  || 'punaHub',
-            body:     body   || 'New activity',
-            tag:      tag    || 'punahub',
-            icon:     icon   || ''
-          })
-        });
-        if (!res.ok) {
-          var err = await res.text();
-          console.warn('[punaHub Push] Edge Fn error:', err);
-        } else {
-          console.log('[punaHub Push] ✅ Push sent to', toEmail);
+      var payload = JSON.stringify({
+        to_email: toEmail,
+        title:    title || 'punaHub',
+        body:     body  || 'New activity',
+        tag:      tag   || 'punahub',
+        icon:     icon  || ''
+      });
+
+      console.log('[punaHub Push] Sending to', toEmail, '→', endpoint);
+
+      // Retry up to 3 times with 1s delay
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          var res = await fetch(endpoint, {
+            method:  'POST',
+            headers: {
+              'Content-Type':  'application/json',
+              'Authorization': 'Bearer ' + SB_ANON
+            },
+            body: payload
+          });
+          if (res.ok) {
+            var data = await res.json().catch(function(){ return {}; });
+            console.log('[punaHub Push] ✅ Sent! subs hit:', data.sent, '| attempt:', attempt);
+            return;
+          } else {
+            var errText = await res.text().catch(function(){ return res.status; });
+            console.warn('[punaHub Push] ❌ Edge Fn returned', res.status, ':', errText);
+            if (res.status === 401 || res.status === 403) return; // auth error — no point retrying
+          }
+        } catch(e) {
+          console.warn('[punaHub Push] attempt', attempt, 'failed:', e.message);
         }
-      } catch(e) {
-        console.warn('[punaHub Push] sendPush failed:', e.message);
+        if (attempt < 3) await new Promise(function(r){ setTimeout(r, 1000 * attempt); });
       }
     }
 
@@ -6469,13 +6479,17 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
       btn.querySelector('svg').setAttribute('fill','currentColor');
       // Notify post owner (not if liking own post)
       if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
+        var _likeAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
         addNotification(reel.email, {
-          type: 'like',
-          fromEmail: currentUser.email,
-          fromNickname: currentUser.nickname,
-          fromAvatar: currentUser.avatar || '',
-          message: currentUser.nickname + ' liked your post',
-          timestamp: Date.now()
+          id:           'n_like_' + reelId + '_' + currentUser.email.replace(/[^a-z0-9]/gi,'_'),
+          type:         'like',
+          reelId:       reelId,
+          fromEmail:    currentUser.email,
+          fromNickname: currentUser.nickname || currentUser.email.split('@')[0],
+          fromAvatar:   _likeAvatar,
+          message:      (currentUser.nickname || 'Someone') + ' liked your reel',
+          timestamp:    Date.now(),
+          read:         false
         });
       }
     } else {
@@ -6768,13 +6782,19 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
     // Notify post owner (not if commenting on own post)
     if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
+      var _cmtAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
+      var _cmtNick   = currentUser.nickname || currentUser.email.split('@')[0];
       addNotification(reel.email, {
-        type: 'comment',
-        fromEmail: currentUser.email,
-        fromNickname: currentUser.nickname,
-        fromAvatar: currentUser.avatar || '',
-        message: currentUser.nickname + ' commented: ' + text.slice(0, 60) + (text.length > 60 ? '…' : ''),
-        timestamp: Date.now()
+        id:           'n_comment_' + commentId,
+        type:         'comment',
+        reelId:       currentReelId,
+        commentText:  text.slice(0, 80),
+        fromEmail:    currentUser.email,
+        fromNickname: _cmtNick,
+        fromAvatar:   _cmtAvatar,
+        message:      _cmtNick + ' commented: ' + text.slice(0, 60) + (text.length > 60 ? '…' : ''),
+        timestamp:    Date.now(),
+        read:         false
       });
     }
 
@@ -7414,8 +7434,9 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
     }
 
     var notif = {
-      id:           'n_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+      id:           'n_follow_' + fromEmail.replace(/[^a-z0-9]/gi,'_') + '_' + toEmail.replace(/[^a-z0-9]/gi,'_'),
       type:         'follow',
+      reelId:       null,
       fromEmail:    fromEmail,
       fromNickname: fromNickname,
       fromAvatar:   fromAvatar,
@@ -7877,7 +7898,10 @@ window.addEventListener('beforeinstallprompt', (e) => {
     localStorage.setItem('punahub_notifs_' + email, JSON.stringify(notifs));
   }
   function addNotification(toEmail, notif) {
+    // Preserve caller-supplied id (deterministic ids enable proper dedup)
     const fullNotif = { id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), ...notif };
+    // If notif already has an id use it — spread above would overwrite, fix that:
+    if (notif && notif.id) fullNotif.id = notif.id;
     const notifs = getNotifications(toEmail);
     // Dedup: same person + same type + same target (reelId) = always a duplicate
     // Also block same person+type within 30 seconds regardless of target
@@ -9804,31 +9828,47 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
 
   // Push a notification to another user via Supabase (cross-device)
   window.__pushCloudNotif = async function(toEmail, notif) {
-    if (!sb || !toEmail || !notif) return;
-    try {
-      // 1. Store in Supabase DB (for Realtime + history)
-      await sb.from('punahub_notifs').insert({
-        to_email:   toEmail,
-        from_email: notif.fromEmail   || '',
-        type:       notif.type        || 'notif',
-        payload:    notif,
-        created_at: new Date().toISOString()
-      });
+    if (!toEmail || !notif) return;
 
-      // 2. Send Web Push to all of the recipient's devices (via Edge Function)
-      if (window.__punaPush) {
-        var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
-        var title  = 'punaHub — ' + (notif.fromNickname || 'Someone');
-        var body   = notif.message || msgMap[notif.type] || 'New activity';
-        var tag    = 'puna-' + (notif.type || 'notif') + '-' + (notif.fromEmail || '');
-        // Only send push if recipient is NOT the sender
-        var cu = window.__punaActiveUser;
-        if (!cu || cu.email !== toEmail) {
-          window.__punaPush.send(toEmail, title, body, tag, '');
-        }
+    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+    var title  = 'punaHub — ' + (notif.fromNickname || 'Someone');
+    var body   = notif.message || msgMap[notif.type] || 'New activity';
+    var tag    = 'puna-' + (notif.type || 'notif') + '-' + (notif.fromEmail || '');
+    var cu     = window.__punaActiveUser;
+
+    // ── Always send Web Push FIRST (does not need sb) ────────
+    // Only send to recipient — never back to sender
+    if (window.__punaPush && (!cu || cu.email !== toEmail)) {
+      window.__punaPush.send(toEmail, title, body, tag, '');
+    }
+
+    // ── Store in Supabase (wait for sb if not ready yet) ─────
+    var _doInsert = async function() {
+      if (!window.sb) return;
+      try {
+        await window.sb.from('punahub_notifs').insert({
+          to_email:   toEmail,
+          from_email: notif.fromEmail || '',
+          type:       notif.type      || 'notif',
+          payload:    notif,
+          created_at: new Date().toISOString()
+        });
+        console.log('[punaHub] ✅ Notif saved to Supabase for', toEmail);
+      } catch(e) {
+        console.warn('[punaHub] Supabase notif insert failed:', e.message);
       }
-    } catch(e) {
-      console.warn('[punaHub] Cloud notif push failed:', e.message);
+    };
+
+    if (window.sb) {
+      _doInsert();
+    } else {
+      // Supabase not ready yet — wait up to 5s
+      var _waited = 0;
+      var _waiter = setInterval(function() {
+        _waited += 200;
+        if (window.sb) { clearInterval(_waiter); _doInsert(); }
+        else if (_waited >= 5000) { clearInterval(_waiter); console.warn('[punaHub] sb never ready for notif insert'); }
+      }, 200);
     }
   };
 
