@@ -564,16 +564,27 @@
       var bInfo   = getBrowserName(info);
       var featColor = { follow:'rgba(201,245,66,0.12)', like:'rgba(255,82,82,0.12)', comment:'rgba(66,245,213,0.12)' };
 
+      // Context-aware headline when triggered by real activity (follow/like/comment)
+      var _activityCtx = arguments[1];
+      var _ctxMap = {
+        follow:  { icon: '👤', title: 'Someone just followed you!',      color: '#c9f542', sub: 'Allow notifications to never miss a follower.' },
+        like:    { icon: '❤️', title: 'Someone just liked your reel!',   color: '#ff6b6b', sub: 'Allow notifications to get alerted instantly.' },
+        comment: { icon: '💬', title: 'Someone commented on your reel!', color: '#42f5d5', sub: 'Allow notifications to stay in every conversation.' }
+      };
+      var _ctx = _activityCtx && _ctxMap[_activityCtx];
+      var _promptTitle = _ctx ? _ctx.title : 'Stay in the loop';
+      var _bellIcon    = _ctx ? _ctx.icon  : '🔔';
+      var _promptSub   = _ctx
+        ? ('<span style="color:' + _ctx.color + ';font-weight:600">' + _ctx.sub + '</span>')
+        : ('<span id="pnp-browser-badge">' + bInfo.icon + ' ' + bInfo.name + '</span><span>&nbsp;· punaHub</span>');
+
       overlay.innerHTML =
         '<div id="pnp-card">' +
           '<div id="pnp-header">' +
-            '<div id="pnp-bell-wrap">🔔</div>' +
+            '<div id="pnp-bell-wrap">' + _bellIcon + '</div>' +
             '<div id="pnp-titles">' +
-              '<div id="pnp-title">Stay in the loop</div>' +
-              '<div id="pnp-subtitle">' +
-                '<span id="pnp-browser-badge">' + bInfo.icon + ' ' + bInfo.name + '</span>' +
-                '<span>· punaHub</span>' +
-              '</div>' +
+              '<div id="pnp-title">' + _promptTitle + '</div>' +
+              '<div id="pnp-subtitle">' + _promptSub + '</div>' +
             '</div>' +
           '</div>' +
           '<div id="pnp-features">' +
@@ -11251,6 +11262,41 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
           _osImg,
           _osTag
         );
+      } else if (window.__punaNotif && window.__punaNotif.isSupported &&
+                 window.__punaNotif.isSupported() &&
+                 typeof Notification !== 'undefined' &&
+                 Notification.permission !== 'denied') {
+        // ── Permission not yet granted — prompt user to enable notifications ──
+        // Triggered by real activity (follow/like/comment), so show prompt immediately
+        // Store pending notification to fire it once permission is granted
+        var _pendingType = (notif && notif.type) || 'notif';
+        var _pendingTag  = 'puna-' + _pendingType + '-' + (notif && notif.fromEmail || '');
+        var _pendingImg  = (avatar && !avatar.startsWith('data:')) ? avatar : '';
+        var _pendingTitle = 'punaHub — ' + name;
+        var _pendingBody  = msg;
+
+        // Show the permission prompt (force-show, bypassing snooze) after short delay
+        // so the in-app toast/banner renders first
+        setTimeout(function() {
+          if (window.__punaNotif && window.__punaNotif.isGranted()) {
+            // Already granted by the time timer fires — just show the notification
+            window.__punaNotif.show(_pendingTitle, _pendingBody, _pendingImg, _pendingTag);
+            return;
+          }
+          // Show permission prompt with context-aware headline (follow/like/comment)
+          if (typeof window.__punaAskNotifPermission === 'function') {
+            window.__punaAskNotifPermission(true /* forceShow */, _pendingType /* activityType */);
+            // After permission is granted, fire the pending notification
+            var _grantPoller = setInterval(function() {
+              if (window.__punaNotif && window.__punaNotif.isGranted()) {
+                clearInterval(_grantPoller);
+                window.__punaNotif.show(_pendingTitle, _pendingBody, _pendingImg, _pendingTag);
+              }
+            }, 500);
+            // Stop polling after 30s if user never granted
+            setTimeout(function(){ clearInterval(_grantPoller); }, 30000);
+          }
+        }, 800);
       }
     } catch(_ose) {}
 
