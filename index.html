@@ -260,14 +260,50 @@
     var VAPID_PUB='BIOIeHOJdthC2DTUTn3NrY751kCRVmtiifNwl2OgLzuA6UogmKVi13I_7FI90netvv-Ct5tY1y7RW_dprCSfMGc';
     function b64Arr(b){var p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/')),a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a;}
     async function subscribePush(email){
-      if(!email||!('PushManager' in window)||Notification.permission!=='granted')return;
+      if(!email||!('PushManager' in window)||Notification.permission!=='granted'){
+        console.warn('[Push] subscribe skipped - email:',email,'PushManager:','PushManager' in window,'permission:',('Notification' in window?Notification.permission:'N/A'));
+        return;
+      }
       try{
-        var reg=await navigator.serviceWorker.ready;
+        // Wait for SW to be fully active (max 8s)
+        var reg = null;
+        try{
+          var p = navigator.serviceWorker.ready;
+          var t = new Promise(function(_,rej){setTimeout(function(){rej(new Error('SW ready timeout'));},8000);});
+          reg = await Promise.race([p,t]);
+        }catch(e){ console.warn('[Push] SW not ready:',e.message); return; }
+
+        if(!reg || !reg.pushManager){ console.warn('[Push] No pushManager on SW reg'); return; }
+
         var sub=await reg.pushManager.getSubscription();
-        if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64Arr(VAPID_PUB)});
-        if(window.sb){var j=sub.toJSON();await window.sb.from('punahub_push_subs').upsert({user_email:email,endpoint:sub.endpoint,p256dh:j.keys&&j.keys.p256dh,auth:j.keys&&j.keys.auth,updated_at:new Date().toISOString()},{onConflict:'user_email,endpoint'});}
-        console.log('[Push] subscribed:',email);
-      }catch(e){console.warn('[Push] subscribe:',e.message);}
+        if(!sub){
+          console.log('[Push] No existing sub, creating new...');
+          sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64Arr(VAPID_PUB)});
+        } else {
+          console.log('[Push] Reusing existing subscription');
+        }
+        console.log('[Push] Subscription endpoint:',sub.endpoint.slice(0,60)+'...');
+        // Save to Supabase — wait for sb if needed
+        var _save = async function(){
+          if(!window.sb){console.warn('[Push] sb not ready for save');return;}
+          var j=sub.toJSON();
+          var r=await window.sb.from('punahub_push_subs').upsert({
+            user_email:email,
+            endpoint:sub.endpoint,
+            p256dh:j.keys&&j.keys.p256dh,
+            auth:j.keys&&j.keys.auth,
+            updated_at:new Date().toISOString()
+          },{onConflict:'user_email,endpoint'});
+          if(r.error) console.warn('[Push] Supabase upsert error:',r.error.message);
+          else console.log('[Push] Subscription saved to Supabase for',email);
+        };
+        if(window.sb) await _save();
+        else { var _wt=0,_wi=setInterval(async function(){_wt+=300;if(window.sb){clearInterval(_wi);await _save();}else if(_wt>6000)clearInterval(_wi);},300); }
+      }catch(e){
+        console.warn('[Push] subscribe failed:',e.message);
+        if(e.name==='NotAllowedError') console.warn('[Push] Permission denied by browser');
+        if(e.message&&e.message.includes('VAPID')) console.warn('[Push] VAPID key issue - check key format');
+      }
     }
     async function sendPush(toEmail,title,body,tag){
       var SB_URL=window.SB_URL||'https://hafjrxixytudodnuptky.supabase.co';
@@ -284,6 +320,38 @@
       }
     }
     window.__punaPush={subscribe:subscribePush,send:sendPush};
+
+    // ── Auto debug: log push status to console on load ──
+    window.__punaDiagnostic = async function(){
+      console.log('=== punaHub Push Diagnostic ===');
+      console.log('Notification support:', 'Notification' in window);
+      console.log('Notification permission:', 'Notification' in window ? Notification.permission : 'N/A');
+      console.log('ServiceWorker support:', 'serviceWorker' in navigator);
+      console.log('PushManager support:', 'PushManager' in window);
+      console.log('window.sb ready:', !!window.sb);
+      console.log('window.__punaPush:', !!window.__punaPush);
+      console.log('Active user:', window.__punaActiveUser ? window.__punaActiveUser.email : 'none');
+      if('serviceWorker' in navigator){
+        try{
+          var reg = await navigator.serviceWorker.getRegistration();
+          console.log('SW registration:', reg ? reg.scope : 'none');
+          if(reg){
+            var sub = await reg.pushManager.getSubscription();
+            console.log('Push subscription:', sub ? 'EXISTS endpoint:'+sub.endpoint.slice(0,60)+'...' : 'NONE - not subscribed');
+          }
+        }catch(e){console.warn('SW check error:',e.message);}
+      }
+      // Check Supabase push_subs table
+      if(window.sb && window.__punaActiveUser){
+        try{
+          var r = await window.sb.from('punahub_push_subs').select('*').eq('user_email', window.__punaActiveUser.email);
+          console.log('Supabase push_subs for this user:', r.data ? r.data.length + ' rows' : 'ERROR: '+JSON.stringify(r.error));
+        }catch(e){console.warn('Supabase check error:',e.message);}
+      }
+      console.log('================================');
+    };
+    // Run diagnostic 4s after load
+    setTimeout(function(){ if(window.__punaDiagnostic) window.__punaDiagnostic(); }, 4000);
   })();
 
   // ================================================================
@@ -9624,9 +9692,13 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
     var body   = notif.message || msgMap[notif.type] || 'New activity';
     var tag    = 'puna-' + (notif.type||'notif') + '-' + (notif.fromEmail||'');
     var cu     = window.__punaActiveUser;
-    // 1. Web Push FIRST (no sb needed)
+    // 1. Web Push via Edge Function (works when app is closed)
     if (window.__punaPush && (!cu || cu.email !== toEmail)) {
       window.__punaPush.send(toEmail, title, body, tag);
+    }
+    // 1b. Also fire direct OS notification if recipient is on THIS device right now
+    if (cu && cu.email === toEmail && window.__punaNotif && window.__punaNotif.isGranted()) {
+      window.__punaNotif.show(title, body, '', tag);
     }
     // 2. Save to Supabase (wait if not ready)
     var _doInsert = async function() {
