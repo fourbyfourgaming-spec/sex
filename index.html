@@ -194,29 +194,71 @@
       if (!('Notification' in window)) return;
       if (Notification.permission !== 'granted') return;
 
-      // ROOT CAUSE FIX:
-      // The SW is registered from a blob: URL (no separate file needed).
-      // Windows Chrome/Edge silently rejects reg.showNotification() from
-      // blob-scoped SWs — no error, no notification. The welcome notification
-      // worked only because the SW wasn't ready yet at that moment.
-      // For like/comment/follow the SW IS ready, so it was called and silently failed.
-      //
-      // Fix: ALWAYS use new Notification() directly. It works on ALL platforms
-      // (Windows, Android, Mac) when the app is open. The SW still handles
-      // background Web Push (push event) — that is unaffected by this change.
+      var opts = {
+        body:               body  || 'New activity on punaHub',
+        icon:               ICON,
+        badge:              BADGE,
+        tag:                tag   || ('puna-' + Date.now()),
+        renotify:           true,   // always vibrate/sound even if same tag
+        requireInteraction: false,  // auto-dismiss (Windows keeps until clicked)
+        silent:             false,
+        timestamp:          Date.now(),
+        // Vibration — Android only, ignored on Windows (no error thrown)
+        vibrate:            [100, 50, 100],
+        // Action buttons — Android Chrome + some desktop Chromium
+        actions: [
+          { action: 'open',    title: '👀 Open' },
+          { action: 'dismiss', title: '✕ Dismiss' }
+        ],
+        data: { title: title, body: body, image: image }
+      };
+
+      // Add image only for non-base64 URLs (base64 crashes Android notif)
+      if (image && image.length > 0 && !image.startsWith('data:')) {
+        opts.image = image;
+      }
+
+      // Try SW first (Android needs SW for full notification support)
+      // Fall back to direct Notification API (works fine on Windows/Desktop)
       try {
-        var n = new Notification(title, {
-          body:               body  || 'New activity on punaHub',
-          icon:               ICON,
-          badge:              BADGE,
-          tag:                tag   || ('puna-' + Date.now()),
-          renotify:           true,
-          requireInteraction: false,
-          silent:             false
-        });
-        n.onclick = function() { window.focus(); n.close(); };
+        var reg = _swReg || window.__swReg;
+        // If no SW yet, try to grab the ready one (non-blocking with timeout)
+        if (!reg && navigator.serviceWorker) {
+          try {
+            var timeout = new Promise(function(_, rej) { setTimeout(function(){ rej('timeout'); }, 300); });
+            reg = await Promise.race([navigator.serviceWorker.ready, timeout]);
+          } catch(e) { reg = null; }
+        }
+        if (reg && reg.showNotification) {
+          // SW path — needed for Android background push
+          // On Windows/Desktop, blob-scoped SW showNotification() is silently blocked,
+          // so we also fire new Notification() directly as a guaranteed fallback.
+          var _isDesktop = !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+          if (_isDesktop) {
+            // Desktop: new Notification() is guaranteed to work; SW may silently fail
+            new Notification(title, {
+              body: opts.body, icon: opts.icon, badge: opts.badge,
+              tag: opts.tag, silent: false, renotify: true
+            });
+          } else {
+            // Android/mobile: SW path is required for background notifications
+            await reg.showNotification(title, opts);
+          }
+        } else {
+          // Direct Notification API — always works on Windows Chrome/Edge/Firefox
+          // Works on Android too when app is in foreground
+          new Notification(title, {
+            body:    opts.body,
+            icon:    opts.icon,
+            badge:   opts.badge,
+            tag:     opts.tag,
+            silent:  false,
+            renotify: true
+          });
+        }
       } catch(e) {
-        try { new Notification(title, { body: body || '', icon: ICON }); } catch(e2) {}
+        // Last resort fallback — bare minimum
+        try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
       }
     }
 
@@ -7910,9 +7952,9 @@ window.addEventListener('beforeinstallprompt', (e) => {
     // ── If this notification is FOR the current user in THIS tab ────────────
     const cur = typeof currentUser !== 'undefined' ? currentUser : null;
     if (cur && cur.email === toEmail) {
-      // FIX: Fire OS device notification BEFORE seeding __punaShownNotifIds.
-      // If seeded first, the showLiveNotifToast wrapper sees the ID and returns
-      // early — so __punaNotif.show() inside it never runs.
+      // Fire OS device notification BEFORE seeding __punaShownNotifIds.
+      // Seeding it first causes showLiveNotifToast wrapper to return early (dedup),
+      // which means __punaNotif.show() inside it never gets called.
       try {
         if (window.__punaNotif && window.__punaNotif.isGranted()) {
           var _mm = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
@@ -7924,7 +7966,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
           );
         }
       } catch(_ne) {}
-      // Now seed the shown ID so the BroadcastChannel/storage event doesn't fire a 2nd toast
+      // Now seed shown ID so the BroadcastChannel / storage event won't fire a 2nd toast
       if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(fullNotif.id);
       if (typeof window.showLiveNotifToast === 'function') {
         window.showLiveNotifToast(fullNotif, toEmail);
@@ -9889,8 +9931,8 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                   }
                 } catch(e2) {}
               }
-              // FIX: Fire OS notification BEFORE the localStorage dedup check —
-              // the dedup check returns early if already stored, blocking the notification.
+              // Fire OS notification BEFORE the localStorage dedup check — the check
+              // can return early and block showLiveNotifToast from running.
               try {
                 if (window.__punaNotif && window.__punaNotif.isGranted()) {
                   var _rtMM2 = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
