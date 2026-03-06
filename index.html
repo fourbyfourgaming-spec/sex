@@ -218,43 +218,27 @@
         opts.image = image;
       }
 
-      // BUG FIX: Blob-URL Service Workers cannot call showNotification() on Windows/Desktop
-      // Chrome/Edge silently drops the call — notifications never appear in the taskbar.
-      // Fix: on desktop always use direct new Notification() which works perfectly.
-      // On Android/mobile keep the SW path (required for background push on mobile).
-      var _isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      // ── FIX: Blob-URL SW cannot showNotification() on Windows desktop (silently dropped)
+      // Desktop → always direct new Notification(). Android → SW path first.
+      var _ua = navigator.userAgent;
+      var _isMobile = /Android|iPhone|iPad|iPod/i.test(_ua);
       if (!_isMobile) {
-        // ── WINDOWS / DESKTOP: direct Notification API ───────
         try {
-          new Notification(title, {
-            body:     opts.body,
-            icon:     opts.icon,
-            badge:    opts.badge,
-            tag:      opts.tag,
-            silent:   false,
-            renotify: true
-          });
+          new Notification(title, { body: opts.body, icon: opts.icon, badge: opts.badge, tag: opts.tag, silent: false, renotify: true });
         } catch(e) {
           try { new Notification(title, { body: opts.body, icon: opts.icon }); } catch(e2) {}
         }
       } else {
-        // ── ANDROID / MOBILE: SW path first, fallback to direct ──
         try {
           var reg = _swReg || window.__swReg;
           if (!reg && navigator.serviceWorker) {
             try {
-              var timeout = new Promise(function(_, rej) { setTimeout(function(){ rej('timeout'); }, 300); });
-              reg = await Promise.race([navigator.serviceWorker.ready, timeout]);
+              var _t = new Promise(function(_, rej){ setTimeout(function(){ rej(); }, 300); });
+              reg = await Promise.race([navigator.serviceWorker.ready, _t]);
             } catch(e) { reg = null; }
           }
-          if (reg && reg.showNotification) {
-            await reg.showNotification(title, opts);
-          } else {
-            new Notification(title, {
-              body: opts.body, icon: opts.icon, badge: opts.badge,
-              tag: opts.tag, silent: false, renotify: true
-            });
-          }
+          if (reg && reg.showNotification) { await reg.showNotification(title, opts); }
+          else { new Notification(title, { body: opts.body, icon: opts.icon, badge: opts.badge, tag: opts.tag, silent: false, renotify: true }); }
         } catch(e) {
           try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
         }
@@ -520,16 +504,13 @@
     window.__punaAskNotifPermission = async function(forceShow) {
       injectStyles();
       var info = getBrowserInfo();
-
       // Already granted — silently subscribe push and exit
       if (info.supported && Notification.permission === 'granted') {
         var cu = window.__punaActiveUser;
         if (cu && cu.email && window.__punaPush) window.__punaPush.subscribe(cu.email);
         return;
       }
-
-      // BUG FIX: Old code blocked re-showing with punahub_notif_asked / snooze flags.
-      // Fix: always show until granted — no snooze, no "already asked" block.
+      // FIX: removed punahub_notif_asked / snooze guards — always show until granted
 
       // Remove any existing overlay
       var old = document.getElementById('puna-notif-overlay');
@@ -603,9 +584,7 @@
       overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
 
       document.getElementById('pnp-skip').onclick = function() {
-        // BUG FIX: Old code snoozed for 3 days — user would never see the prompt.
-        // Fix: just dismiss. Will show again on next page load until permission granted.
-        dismiss(overlay);
+        dismiss(overlay); // FIX: removed 3-day snooze — will ask again next startup
       };
 
       document.getElementById('pnp-allow').onclick = async function() {
@@ -630,31 +609,23 @@
       };
     };
 
-    // BUG FIX: Old code checked snooze + punahub_notif_asked and silently returned.
-    // Fix: always show the prompt on every startup until permission is granted.
+    // FIX: always show on every startup until granted — no snooze, no asked check
     window.__punaCheckNotifPrompt = function() {
       if (!('Notification' in window)) return;
-      if (Notification.permission === 'granted') return; // granted — never ask again
+      if (Notification.permission === 'granted') return;
       window.__punaAskNotifPermission();
     };
 
-    // ── Show immediately on every page load (before login) ──
-    // Fires 0.9s after page ready so UI renders first. Keeps showing until Allow is clicked.
+    // Show immediately on page load (before login too)
     (function() {
-      function _startupNotifPrompt() {
-        if (!('Notification' in window)) return;
-        if (Notification.permission === 'granted') return;
+      function _startupPrompt() {
+        if (!('Notification' in window) || Notification.permission === 'granted') return;
         setTimeout(function() {
-          if (typeof window.__punaAskNotifPermission === 'function') {
-            window.__punaAskNotifPermission();
-          }
+          if (typeof window.__punaAskNotifPermission === 'function') window.__punaAskNotifPermission();
         }, 900);
       }
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', _startupNotifPrompt);
-      } else {
-        _startupNotifPrompt();
-      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startupPrompt);
+      else _startupPrompt();
     })();
 
   })();
@@ -6079,18 +6050,14 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
     // 🔔 Ask for device notification permission — always show until granted
     setTimeout(function() {
-      if (typeof window.__punaAskNotifPermission === 'function') {
-        window.__punaAskNotifPermission();
-      }
+      if (typeof window.__punaAskNotifPermission === 'function') window.__punaAskNotifPermission();
     }, 500);
 
-    // 🔔 If permission already granted (returning user), re-subscribe push silently
+    // 🔔 Re-subscribe Web Push for this user (permission already granted on returning visit)
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       setTimeout(function() {
-        if (window.__punaPush) {
-          window.__punaPush.subscribe(user.email);
-        }
-      }, 3000);
+        if (window.__punaPush && user && user.email) window.__punaPush.subscribe(user.email);
+      }, 1500);
     }
 
     switchReelTab('feed');
@@ -7181,7 +7148,7 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
           const tempURL = URL.createObjectURL(videoFile);
           const vid = document.createElement('video');
           vid.src = tempURL; vid.muted = true; vid.playsInline = true;
-          vid.load(); // BUG FIX: missing load() call — without it onloadeddata never fires on Chrome/Firefox
+          vid.load(); // FIX: missing load() — onloadeddata never fires without it on Chrome/Firefox
           vid.currentTime = 0.5;
           vid.onloadeddata = () => {
             const cvs = document.createElement('canvas');
@@ -7336,23 +7303,18 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
     } catch(e) {}
   }
   window.refreshProfileStats = refreshProfileStats;
-
-  // BUG FIX: renderFeed, renderComments, showToast, formatNum, openComments,
-  // toggleLike, postComment, toggleFollow, shareReel were NOT exposed on window.
-  // safeCall('renderFeed') silently failed. HTML onclick handlers in dynamically
-  // rendered cards also failed in strict cross-script contexts.
-  window.renderFeed          = renderFeed;
-  window.renderComments      = renderComments;
-  window.showToast           = showToast;
-  window.formatNum           = formatNum;
-  window.openComments        = openComments;
-  window.toggleLike          = toggleLike;
-  window.postComment         = postComment;
-  window.toggleFollow        = toggleFollow;
-  window.shareReel           = shareReel;
-  window.renderProfile       = renderProfile;
-  window.switchReelTab       = window.switchReelTab || switchReelTab;
-  window.setupReelObserver   = setupReelObserver;
+  // Expose all key functions on window so safeCall(), live-engine, and HTML onclicks work
+  window.renderFeed        = renderFeed;
+  window.renderComments    = renderComments;
+  window.showToast         = showToast;
+  window.formatNum         = formatNum;
+  window.openComments      = openComments;
+  window.toggleLike        = toggleLike;
+  window.postComment       = postComment;
+  window.toggleFollow      = toggleFollow;
+  window.shareReel         = shareReel;
+  window.renderProfile     = renderProfile;
+  window.setupReelObserver = setupReelObserver;
 
   function goBackToMyProfile() {
     renderProfile(currentUser);
@@ -7885,12 +7847,14 @@ window.addEventListener('beforeinstallprompt', (e) => {
       if (!data[targetEmail].followers.includes(currentUser.email))
         data[targetEmail].followers.push(currentUser.email);
       addNotification(targetEmail, {
-        type: 'follow',
-        fromEmail: currentUser.email,
+        id:           'n_follow_' + currentUser.email.replace(/[^a-z0-9]/gi,'_') + '_' + targetEmail.replace(/[^a-z0-9]/gi,'_'),
+        type:         'follow',
+        fromEmail:    currentUser.email,
         fromNickname: currentUser.nickname,
-        fromAvatar: (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '',
-        message: currentUser.nickname + ' started following you',
-        timestamp: Date.now()
+        fromAvatar:   (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '',
+        message:      (currentUser.nickname || currentUser.email.split('@')[0]) + ' started following you',
+        timestamp:    Date.now(),
+        read:         false
       });
     }
 
@@ -7991,25 +7955,25 @@ window.addEventListener('beforeinstallprompt', (e) => {
       updateNotifBadge(toEmail);
     }
 
-    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime
+    // Push to cloud → Supabase Realtime delivers to recipient's other devices
+    // Also sends Web Push via Edge Function for background/closed-tab delivery
     if (typeof window.__pushCloudNotif === 'function') {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
 
-    // BUG FIX: OS device notification was only fired inside showLiveNotifToast which
-    // has a dedup guard. For the recipient on THIS device, fire it directly here too.
+    // Fire OS device notification directly for recipient on THIS device
     try {
-      if (window.__punaNotif && window.__punaNotif.isGranted()) {
-        var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
-        var _osBody  = fullNotif.message || (fullNotif.type==='like' ? 'liked your reel' : fullNotif.type==='comment' ? 'commented on your reel' : fullNotif.type==='follow' ? 'started following you' : 'new activity');
-        var _osImg   = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
-        var _osTag   = 'puna-' + (fullNotif.type||'notif') + '-' + (fullNotif.fromEmail||'');
-        var _devUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
-        if (_devUser && _devUser.email === toEmail) {
-          window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
-        }
+      var _devUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+      if (_devUser && _devUser.email === toEmail && window.__punaNotif && window.__punaNotif.isGranted()) {
+        var _tmOS = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+        window.__punaNotif.show(
+          'punaHub — ' + (fullNotif.fromNickname || 'Someone'),
+          fullNotif.message || ((fullNotif.fromNickname||'Someone') + ' ' + (_tmOS[fullNotif.type]||'new activity')),
+          (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '',
+          'puna-' + (fullNotif.type||'notif') + '-' + (fullNotif.fromEmail||'')
+        );
       }
-    } catch(_osErr) {}
+    } catch(_oe) {}
   }
   function updateNotifBadge(email) {
     if (!email) return;
@@ -9892,9 +9856,9 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
     var tag    = 'puna-' + (notif.type || 'notif') + '-' + (notif.fromEmail || '');
     var cu     = window.__punaActiveUser;
 
-    // ── Always send Web Push FIRST (does not need sb) ────────
-    // Only send to recipient — never back to sender
-    if (window.__punaPush && (!cu || cu.email !== toEmail)) {
+    // Always send Web Push to recipient device — this is the background/closed-tab path
+    // Sends to recipient regardless of who is currently active on this device
+    if (window.__punaPush) {
       window.__punaPush.send(toEmail, title, body, tag, '');
     }
 
@@ -9953,11 +9917,11 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                   if (uRes && uRes.data && uRes.data.data) {
                     var ud = uRes.data.data;
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
-                    if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
+                    if (ud.nickname) n.fromNickname = ud.nickname;
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    // BUG FIX: was always setting "started following you" for all types
-                    var _msgTypes = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
-                    n.message = n.fromNickname + ' ' + (_msgTypes[n.type] || 'new activity');
+                    // FIX: was always "started following you" — now correct per type
+                    var _typeMsg = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+                    n.message = n.fromNickname + ' ' + (_typeMsg[n.type] || 'new activity');
                   }
                 } catch(e2) {}
               }
@@ -9970,19 +9934,20 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               }
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
-              if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
-              // BUG FIX: OS device notification was not firing on cross-device Realtime delivery.
-              // showLiveNotifToast dedup guard can block it. Fire OS notification directly here.
+              // Fire OS device notification immediately — this is the cross-device push path
               try {
                 if (window.__punaNotif && window.__punaNotif.isGranted()) {
-                  var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
-                  var _rtBody  = n.message || (n.type==='like' ? 'liked your reel' : n.type==='comment' ? 'commented on your reel' : n.type==='follow' ? 'started following you' : 'new activity');
-                  var _rtImg   = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
-                  var _rtTag   = 'puna-rt-' + (n.type||'notif') + '-' + (n.fromEmail||'');
-                  window.__punaNotif.show(_rtTitle, _rtBody, _rtImg, _rtTag);
+                  var _typeMsg2 = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+                  window.__punaNotif.show(
+                    'punaHub — ' + (n.fromNickname || 'Someone'),
+                    n.message || ((n.fromNickname||'Someone') + ' ' + (_typeMsg2[n.type]||'new activity')),
+                    (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '',
+                    'puna-' + (n.type||'notif') + '-' + (n.fromEmail||'')
+                  );
                 }
-              } catch(_rtErr) {}
-              console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
+              } catch(_ne) {}
+              if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
+              console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname);
             }
             enrichAndShow(notif);
           } catch(e) {
