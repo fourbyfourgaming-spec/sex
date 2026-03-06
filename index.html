@@ -218,34 +218,55 @@
         opts.image = image;
       }
 
-      // Try SW first (Android needs SW for full notification support)
-      // Fall back to direct Notification API (works fine on Windows/Desktop)
-      try {
-        var reg = _swReg || window.__swReg;
-        // If no SW yet, try to grab the ready one (non-blocking with timeout)
-        if (!reg && navigator.serviceWorker) {
-          try {
-            var timeout = new Promise(function(_, rej) { setTimeout(function(){ rej('timeout'); }, 300); });
-            reg = await Promise.race([navigator.serviceWorker.ready, timeout]);
-          } catch(e) { reg = null; }
-        }
-        if (reg && reg.showNotification) {
-          await reg.showNotification(title, opts);
-        } else {
-          // Direct Notification API — always works on Windows Chrome/Edge/Firefox
-          // Works on Android too when app is in foreground
+      // ── Detect if running on a mobile device (Android/iOS) ──
+      var _isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+      // On Windows / Desktop: ALWAYS use direct Notification API.
+      // Blob-URL Service Workers cannot call showNotification() on desktop Chrome/Edge —
+      // the call is silently dropped, so notifications never appear in the taskbar.
+      // Direct new Notification() works perfectly on Windows Chrome, Edge, and Firefox.
+      //
+      // On Android: use SW path first (required for background notifications on mobile).
+      if (!_isMobile) {
+        // ── WINDOWS / DESKTOP path ───────────────────────────
+        try {
           new Notification(title, {
-            body:    opts.body,
-            icon:    opts.icon,
-            badge:   opts.badge,
-            tag:     opts.tag,
-            silent:  false,
+            body:     opts.body,
+            icon:     opts.icon,
+            badge:    opts.badge,
+            tag:      opts.tag,
+            silent:   false,
             renotify: true
           });
+        } catch(e) {
+          // Last resort
+          try { new Notification(title, { body: opts.body, icon: opts.icon }); } catch(e2) {}
         }
-      } catch(e) {
-        // Last resort fallback — bare minimum
-        try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
+      } else {
+        // ── ANDROID / MOBILE path ─────────────────────────────
+        try {
+          var reg = _swReg || window.__swReg;
+          if (!reg && navigator.serviceWorker) {
+            try {
+              var timeout = new Promise(function(_, rej) { setTimeout(function(){ rej('timeout'); }, 300); });
+              reg = await Promise.race([navigator.serviceWorker.ready, timeout]);
+            } catch(e) { reg = null; }
+          }
+          if (reg && reg.showNotification) {
+            await reg.showNotification(title, opts);
+          } else {
+            new Notification(title, {
+              body:     opts.body,
+              icon:     opts.icon,
+              badge:    opts.badge,
+              tag:      opts.tag,
+              silent:   false,
+              renotify: true
+            });
+          }
+        } catch(e) {
+          try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
+        }
       }
     }
 
@@ -7954,6 +7975,25 @@ window.addEventListener('beforeinstallprompt', (e) => {
     if (typeof window.__pushCloudNotif === 'function') {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
+
+    // ── Direct OS device notification for the recipient on THIS device ──────
+    // Fires immediately when permission is granted — safety net for Windows taskbar.
+    try {
+      if (window.__punaNotif && window.__punaNotif.isGranted()) {
+        var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
+        var _osBody  = fullNotif.message || (
+          fullNotif.type === 'like'    ? 'liked your reel' :
+          fullNotif.type === 'comment' ? 'commented on your reel' :
+          fullNotif.type === 'follow'  ? 'started following you' : 'new activity'
+        );
+        var _osImg  = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
+        var _osTag  = 'puna-' + (fullNotif.type || 'notif') + '-' + (fullNotif.fromEmail || '');
+        var _curUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+        if (_curUser && _curUser.email === toEmail) {
+          window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
+        }
+      }
+    } catch (_osErr) {}
   }
   function updateNotifBadge(email) {
     if (!email) return;
@@ -9899,7 +9939,8 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
                     if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    n.message = n.fromNickname + ' started following you';
+                    var _msgMapRt = { follow: 'started following you', like: 'liked your reel', comment: 'commented on your reel', post: 'shared a new reel' };
+                    n.message = n.fromNickname + ' ' + (_msgMapRt[n.type] || 'new activity');
                   }
                 } catch(e2) {}
               }
@@ -9913,6 +9954,20 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
               if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
+              // ── Fire OS device notification for cross-device Realtime delivery ──
+              try {
+                if (window.__punaNotif && window.__punaNotif.isGranted()) {
+                  var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
+                  var _rtBody  = n.message || (
+                    n.type === 'like'    ? 'liked your reel' :
+                    n.type === 'comment' ? 'commented on your reel' :
+                    n.type === 'follow'  ? 'started following you' : 'new activity'
+                  );
+                  var _rtImg  = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
+                  var _rtTag  = 'puna-rt-' + (n.type || 'notif') + '-' + (n.fromEmail || '');
+                  window.__punaNotif.show(_rtTitle, _rtBody, _rtImg, _rtTag);
+                }
+              } catch (_rtErr) {}
               console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
             }
             enrichAndShow(notif);
