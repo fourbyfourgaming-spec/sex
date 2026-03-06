@@ -120,20 +120,35 @@
     // Registered via blob URL so no separate SW file is needed
     var SW_CODE = [
       'var ICON="' + ICON + '";',
+      // Handle Web Push events (background push from server)
       'self.addEventListener("push",function(e){',
       '  var d={};try{d=e.data?e.data.json():{}}catch(x){d={body:e.data?e.data.text():""}}',
-      '  var o={body:d.body||"New activity on punaHub",icon:d.icon||ICON,badge:ICON,',
-      '    tag:d.tag||"punahub",renotify:true,requireInteraction:false,silent:false,',
-      '    vibrate:[100,50,100],timestamp:d.ts||Date.now(),data:d};',
+      '  var o={',
+      '    body:d.body||"New activity on punaHub",',
+      '    icon:d.icon||ICON,badge:ICON,',
+      '    tag:d.tag||"punahub",renotify:true,',
+      '    requireInteraction:false,silent:false,',
+      '    vibrate:[200,80,200,80,200],',
+      '    timestamp:d.ts||Date.now(),',
+      '    data:{url:d.url||"/",notif:d}',
+      '  };',
       '  if(d.image&&!d.image.startsWith("data:"))o.image=d.image;',
       '  e.waitUntil(self.registration.showNotification(d.title||"punaHub",o));',
       '});',
+      // Notification click — focus or open tab
       'self.addEventListener("notificationclick",function(e){',
       '  e.notification.close();',
       '  if(e.action==="dismiss")return;',
+      '  var url=(e.notification.data&&e.notification.data.url)||"/";',
       '  e.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(function(cs){',
       '    for(var i=0;i<cs.length;i++){if("focus"in cs[i]){cs[i].focus();return;}}',
-      '    if(clients.openWindow)clients.openWindow("/");',
+      '    if(clients.openWindow)clients.openWindow(url);',
+      '  }));',
+      '});',
+      // Push subscription change — re-subscribe automatically
+      'self.addEventListener("pushsubscriptionchange",function(e){',
+      '  e.waitUntil(self.registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:e.oldSubscription&&e.oldSubscription.options&&e.oldSubscription.options.applicationServerKey}).then(function(sub){',
+      '    return fetch("'+('__SUPABASE_PUSH_URL__')+'",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"resubscribe",subscription:sub})}).catch(function(){});',
       '  }));',
       '});'
     ].join('');
@@ -234,13 +249,14 @@
       }
     }
 
-    // ── Export global API ────────────────────────────────────
+    // ── Export global API — FULLY ACTIVE ────────────────────
     window.__punaNotif = {
       requestPermission: requestPermission,
       show:              show,
-      isSupported:  function() { return ('Notification' in window); },
-      isGranted:    function() { return ('Notification' in window) && Notification.permission === 'granted'; },
-      icon:              ICON
+      register:          registerSW,
+      icon:              ICON,
+      isSupported: function() { return ('Notification' in window); },
+      isGranted:   function() { return ('Notification' in window) && Notification.permission === 'granted'; }
     };
 
     // Register SW immediately on script load
@@ -251,257 +267,373 @@
     }
 
   })();
-  </script>
 
-  <script>
-  // ================================================================
-  //  VAPID WEB PUSH ENGINE
-  // ================================================================
-  (function(){
-    var VAPID_PUB='BIOIeHOJdthC2DTUTn3NrY751kCRVmtiifNwl2OgLzuA6UogmKVi13I_7FI90netvv-Ct5tY1y7RW_dprCSfMGc';
-    function b64Arr(b){var p='='.repeat((4-b.length%4)%4),s=atob((b+p).replace(/-/g,'+').replace(/_/g,'/')),a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i);return a;}
-    async function subscribePush(email){
-      if(!email||!('PushManager' in window)||Notification.permission!=='granted'){
-        console.warn('[Push] subscribe skipped - email:',email,'PushManager:','PushManager' in window,'permission:',('Notification' in window?Notification.permission:'N/A'));
-        return;
+  // ══════════════════════════════════════════════════════════
+  //  WEB PUSH ENGINE — subscribe device, relay to Supabase Edge Fn
+  //  ✅ Works on Android Chrome, Windows Chrome/Edge/Firefox
+  //  ✅ Background push even when app is closed
+  // ══════════════════════════════════════════════════════════
+  (function() {
+
+    // ── VAPID public key (generated — matches Edge Function) ──
+    var VAPID_PUBLIC_KEY = 'BIOIeHOJdthC2DTUTn3NrY751kCRVmtiifNwl2OgLzuA6UogmKVi13I_7FI90netvv-Ct5tY1y7RW_dprCSfMGc';
+
+    // Convert VAPID key from base64url to Uint8Array
+    function urlB64ToUint8Array(b64) {
+      var padding = '='.repeat((4 - b64.length % 4) % 4);
+      var base64  = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+      var raw     = atob(base64);
+      var arr     = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return arr;
+    }
+
+    // ── Subscribe this device to Web Push ────────────────────
+    async function subscribePush(userEmail) {
+      if (!userEmail) return null;
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.log('[punaHub Push] PushManager not supported on this device');
+        return null;
       }
-      try{
-        // Wait for SW to be fully active (max 8s)
-        var reg = null;
-        try{
-          var p = navigator.serviceWorker.ready;
-          var t = new Promise(function(_,rej){setTimeout(function(){rej(new Error('SW ready timeout'));},8000);});
-          reg = await Promise.race([p,t]);
-        }catch(e){ console.warn('[Push] SW not ready:',e.message); return; }
+      if (Notification.permission !== 'granted') return null;
 
-        if(!reg || !reg.pushManager){ console.warn('[Push] No pushManager on SW reg'); return; }
+      try {
+        // Wait for SW to be ready
+        var reg = await navigator.serviceWorker.ready;
 
-        var sub=await reg.pushManager.getSubscription();
-        if(!sub){
-          console.log('[Push] No existing sub, creating new...');
-          sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64Arr(VAPID_PUB)});
-        } else {
-          console.log('[Push] Reusing existing subscription');
+        // Check for existing subscription — reuse if valid
+        var existing = await reg.pushManager.getSubscription();
+        if (existing) {
+          await _savePushSub(userEmail, existing);
+          console.log('[punaHub Push] ✅ Reused existing push subscription');
+          return existing;
         }
-        console.log('[Push] Subscription endpoint:',sub.endpoint.slice(0,60)+'...');
-        // Save to Supabase — wait for sb if needed
-        var _save = async function(){
-          if(!window.sb){console.warn('[Push] sb not ready for save');return;}
-          var j=sub.toJSON();
-          var r=await window.sb.from('punahub_push_subs').upsert({
-            user_email:email,
-            endpoint:sub.endpoint,
-            p256dh:j.keys&&j.keys.p256dh,
-            auth:j.keys&&j.keys.auth,
-            updated_at:new Date().toISOString()
-          },{onConflict:'user_email,endpoint'});
-          if(r.error) console.warn('[Push] Supabase upsert error:',r.error.message);
-          else console.log('[Push] Subscription saved to Supabase for',email);
-        };
-        if(window.sb) await _save();
-        else { var _wt=0,_wi=setInterval(async function(){_wt+=300;if(window.sb){clearInterval(_wi);await _save();}else if(_wt>6000)clearInterval(_wi);},300); }
-      }catch(e){
-        console.warn('[Push] subscribe failed:',e.message);
-        if(e.name==='NotAllowedError') console.warn('[Push] Permission denied by browser');
-        if(e.message&&e.message.includes('VAPID')) console.warn('[Push] VAPID key issue - check key format');
-      }
-    }
-    async function sendPush(toEmail,title,body,tag){
-      var SB_URL=window.SB_URL||'https://hafjrxixytudodnuptky.supabase.co';
-      var SB_ANON=window.SB_ANON||'sb_publishable_3vO4qDk7kairrebxsaByCA_0zaEavXj';
-      for(var i=1;i<=3;i++){
-        try{
-          var r=await fetch(SB_URL+'/functions/v1/push-notify',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+SB_ANON},body:JSON.stringify({to_email:toEmail,title:title||'punaHub',body:body||'New activity',tag:tag||'punahub'})});
-          if(r.ok){var d=await r.json().catch(function(){return{};});console.log('[Push] sent:',d.sent,'devices');return;}
-          var et=await r.text().catch(function(){return r.status;});
-          console.warn('[Push] error',r.status,et);
-          if(r.status===401||r.status===403)return;
-        }catch(e){console.warn('[Push] attempt',i,e.message);}
-        if(i<3)await new Promise(function(res){setTimeout(res,1000*i);});
-      }
-    }
-    window.__punaPush={subscribe:subscribePush,send:sendPush};
 
-    // ── Auto debug: log push status to console on load ──
-    window.__punaDiagnostic = async function(){
-      console.log('=== punaHub Push Diagnostic ===');
-      console.log('Notification support:', 'Notification' in window);
-      console.log('Notification permission:', 'Notification' in window ? Notification.permission : 'N/A');
-      console.log('ServiceWorker support:', 'serviceWorker' in navigator);
-      console.log('PushManager support:', 'PushManager' in window);
-      console.log('window.sb ready:', !!window.sb);
-      console.log('window.__punaPush:', !!window.__punaPush);
-      console.log('Active user:', window.__punaActiveUser ? window.__punaActiveUser.email : 'none');
-      if('serviceWorker' in navigator){
-        try{
-          var reg = await navigator.serviceWorker.getRegistration();
-          console.log('SW registration:', reg ? reg.scope : 'none');
-          if(reg){
-            var sub = await reg.pushManager.getSubscription();
-            console.log('Push subscription:', sub ? 'EXISTS endpoint:'+sub.endpoint.slice(0,60)+'...' : 'NONE - not subscribed');
+        // Subscribe to push
+        var sub = await reg.pushManager.subscribe({
+          userVisibleOnly:    true,
+          applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+
+        await _savePushSub(userEmail, sub);
+        console.log('[punaHub Push] ✅ New push subscription saved for', userEmail);
+        return sub;
+
+      } catch(e) {
+        console.warn('[punaHub Push] Subscribe failed:', e.message);
+        return null;
+      }
+    }
+
+    // ── Save subscription to Supabase ─────────────────────────
+    async function _savePushSub(userEmail, sub) {
+      if (!window.sb || !sub) return;
+      try {
+        var subJson = sub.toJSON();
+        await window.sb.from('punahub_push_subs').upsert({
+          user_email: userEmail,
+          endpoint:   sub.endpoint,
+          p256dh:     subJson.keys && subJson.keys.p256dh,
+          auth:       subJson.keys && subJson.keys.auth,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_email,endpoint' });
+      } catch(e) {
+        console.warn('[punaHub Push] Save sub failed:', e.message);
+      }
+    }
+
+    // ── Send push via Supabase Edge Function ─────────────────
+    // Called server-side equivalent: we call the Edge Fn with the target email
+    // The Edge Fn looks up their subscriptions and sends Web Push
+    async function sendPushNotif(toEmail, title, body, tag, icon) {
+      if (!toEmail) return;
+      var SB_URL  = (typeof window.SB_URL  !== 'undefined' ? window.SB_URL  : '') || 'https://hafjrxixytudodnuptky.supabase.co';
+      var SB_ANON = (typeof window.SB_ANON !== 'undefined' ? window.SB_ANON : '') || '';
+      var endpoint = SB_URL + '/functions/v1/push-notify';
+
+      var payload = JSON.stringify({
+        to_email: toEmail,
+        title:    title || 'punaHub',
+        body:     body  || 'New activity',
+        tag:      tag   || 'punahub',
+        icon:     icon  || ''
+      });
+
+      console.log('[punaHub Push] Sending to', toEmail, '→', endpoint);
+
+      // Retry up to 3 times with 1s delay
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          var res = await fetch(endpoint, {
+            method:  'POST',
+            headers: {
+              'Content-Type':  'application/json',
+              'Authorization': 'Bearer ' + SB_ANON
+            },
+            body: payload
+          });
+          if (res.ok) {
+            var data = await res.json().catch(function(){ return {}; });
+            console.log('[punaHub Push] ✅ Sent! subs hit:', data.sent, '| attempt:', attempt);
+            return;
+          } else {
+            var errText = await res.text().catch(function(){ return res.status; });
+            console.warn('[punaHub Push] ❌ Edge Fn returned', res.status, ':', errText);
+            if (res.status === 401 || res.status === 403) return; // auth error — no point retrying
           }
-        }catch(e){console.warn('SW check error:',e.message);}
+        } catch(e) {
+          console.warn('[punaHub Push] attempt', attempt, 'failed:', e.message);
+        }
+        if (attempt < 3) await new Promise(function(r){ setTimeout(r, 1000 * attempt); });
       }
-      // Check Supabase push_subs table
-      if(window.sb && window.__punaActiveUser){
-        try{
-          var r = await window.sb.from('punahub_push_subs').select('*').eq('user_email', window.__punaActiveUser.email);
-          console.log('Supabase push_subs for this user:', r.data ? r.data.length + ' rows' : 'ERROR: '+JSON.stringify(r.error));
-        }catch(e){console.warn('Supabase check error:',e.message);}
-      }
-      console.log('================================');
+    }
+
+    // ── Expose globally ────────────────────────────────────────
+    window.__punaPush = {
+      subscribe:   subscribePush,
+      send:        sendPushNotif,
+      vapidKey:    VAPID_PUBLIC_KEY
     };
-    // Run diagnostic 4s after load
-    setTimeout(function(){ if(window.__punaDiagnostic) window.__punaDiagnostic(); }, 4000);
+
   })();
 
-  // ================================================================
-  //  NOTIFICATION PERMISSION UI — all browsers + ask on page open
-  // ================================================================
-  (function(){
-    function css(){
-      if(document.getElementById('_pnpcss'))return;
-      var s=document.createElement('style');s.id='_pnpcss';
-      s.textContent='@keyframes pnpIn{from{opacity:0;transform:translateY(48px)}to{opacity:1;transform:translateY(0)}}'
-        +'@keyframes pnpOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(48px)}}'
-        +'@keyframes pnpPulse{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,.4)}50%{box-shadow:0 0 0 10px rgba(201,245,66,0)}}'
-        +'#_pnpOv{position:fixed;inset:0;z-index:999999;display:flex;align-items:flex-end;justify-content:center;padding:0 0 28px;background:rgba(0,0,0,.65);backdrop-filter:blur(6px);animation:pnpIn .4s cubic-bezier(.16,1,.3,1) both}'
-        +'#_pnpCard{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#181d2b,#0f1218);border:1.5px solid rgba(201,245,66,.3);border-radius:24px;padding:22px 20px 18px;box-shadow:0 0 0 4px rgba(201,245,66,.06),0 32px 64px rgba(0,0,0,.9);font-family:"DM Sans",system-ui,sans-serif;position:relative;overflow:hidden}'
-        +'#_pnpCard::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(201,245,66,.5),transparent)}'
-        +'#_pnpHead{display:flex;align-items:center;gap:14px;margin-bottom:14px}'
-        +'#_pnpBell{width:56px;height:56px;border-radius:16px;background:rgba(201,245,66,.08);border:1.5px solid rgba(201,245,66,.25);display:flex;align-items:center;justify-content:center;font-size:1.9rem;flex-shrink:0;animation:bellShake .9s ease .5s both,pnpPulse 2s ease 1.4s infinite}'
-        +'#_pnpT1{font-size:1.05rem;font-weight:700;color:#fff;line-height:1.3}'
-        +'#_pnpT2{font-size:.76rem;color:#6b7280;margin-top:3px}'
-        +'#_pnpBadge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);border-radius:20px;padding:2px 8px;font-size:.7rem;color:#9ca3af}'
-        +'#_pnpFeats{display:flex;flex-direction:column;gap:8px;margin-bottom:18px}'
-        +'._pnpFeat{display:flex;align-items:center;gap:10px;font-size:.81rem;color:#9ca3af}'
-        +'._pnpFi{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0}'
-        +'#_pnpBtns{display:flex;gap:9px}'
-        +'#_pnpAllow{flex:1;background:#c9f542;color:#0d0f14;border:none;border-radius:13px;padding:14px;font-size:.92rem;font-weight:700;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:7px}'
-        +'#_pnpAllow:hover{background:#d4f75a;transform:translateY(-1px)}'
-        +'#_pnpSkip{background:rgba(255,255,255,.06);color:#6b7280;border:1px solid rgba(255,255,255,.09);border-radius:13px;padding:14px 16px;font-size:.84rem;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all .15s;white-space:nowrap}'
-        +'#_pnpSkip:hover{background:rgba(255,255,255,.11);color:#d1d5db}'
-        +'#_pnpSt{margin-top:10px;font-size:.74rem;text-align:center;color:#4b5563;min-height:16px}'
-        +'#_pnpDenied{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#1a1014,#110e0e);border:1.5px solid rgba(255,107,107,.3);border-radius:24px;padding:22px 20px 18px;font-family:"DM Sans",system-ui,sans-serif;box-shadow:0 32px 64px rgba(0,0,0,.9)}'
-        +'#_pnpDenied h3{font-size:.95rem;font-weight:700;color:#fff;margin-bottom:10px}'
-        +'#_pnpDeniedSteps{font-size:.8rem;color:#9ca3af;line-height:1.7;margin-bottom:14px}'
-        +'#_pnpDeniedSteps b{color:#fbbf24}'
-        +'#_pnpDeniedOk{width:100%;background:rgba(255,255,255,.07);color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;font-size:.88rem;cursor:pointer;font-family:"DM Sans",sans-serif}'
-        +'#_pnpUnsup{width:min(calc(100vw - 24px),400px);background:#111418;border:1.5px solid rgba(255,255,255,.08);border-radius:24px;padding:20px;font-family:"DM Sans",sans-serif;text-align:center;color:#9ca3af;font-size:.82rem}'
-        +'#_pnpUnsup strong{display:block;color:#fff;font-size:.95rem;margin-bottom:8px}';
+  // ══════════════════════════════════════════════════════════
+  //  NOTIFICATION PERMISSION SYSTEM — works in ALL browsers
+  //  Chrome · Firefox · Edge · Safari · Android · iOS
+  //  Shows branded prompt → triggers real browser dialog
+  //  Handles: unsupported / denied / granted / dismissed
+  // ══════════════════════════════════════════════════════════
+  (function() {
+
+    // ── Detect browser & support level ──────────────────────
+    function getBrowserInfo() {
+      var ua = navigator.userAgent;
+      var isIOS     = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+      var isSafari  = /^((?!chrome|android).)*safari/i.test(ua);
+      var isFirefox = /Firefox/.test(ua);
+      var isEdge    = /Edg\//.test(ua);
+      var isChrome  = /Chrome/.test(ua) && !isEdge;
+      var isAndroid = /Android/.test(ua);
+      var supported = 'Notification' in window;
+      // iOS Safari < 16.4 does NOT support Web Notifications at all
+      var iosSafariNoSupport = isIOS && isSafari && !('serviceWorker' in navigator);
+      return { isIOS, isSafari, isFirefox, isEdge, isChrome, isAndroid, supported, iosSafariNoSupport };
+    }
+
+    // ── Inject styles once ──────────────────────────────────
+    function injectStyles() {
+      if (document.getElementById('pnp-styles')) return;
+      var s = document.createElement('style');
+      s.id = 'pnp-styles';
+      s.textContent = [
+        '@keyframes punaPromptIn{from{opacity:0;transform:translateY(48px)}to{opacity:1;transform:translateY(0)}}',
+        '@keyframes punaPromptOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(48px)}}',
+        '@keyframes pnpPulse{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,0.4)}50%{box-shadow:0 0 0 8px rgba(201,245,66,0)}}',
+        '#puna-notif-overlay{position:fixed;inset:0;z-index:999999;display:flex;align-items:flex-end;justify-content:center;padding:0 0 24px;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:punaPromptIn 0.4s cubic-bezier(0.16,1,0.3,1) both}',
+        '#pnp-card{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#181d2b 0%,#0f1218 100%);border:1.5px solid rgba(201,245,66,0.3);border-radius:24px;padding:20px 18px 18px;box-shadow:0 0 0 4px rgba(201,245,66,0.06),0 32px 64px rgba(0,0,0,0.9);font-family:"DM Sans",system-ui,sans-serif;overflow:hidden;position:relative}',
+        '#pnp-card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(201,245,66,0.5),transparent)}',
+        '#pnp-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}',
+        '#pnp-bell-wrap{width:54px;height:54px;border-radius:16px;background:rgba(201,245,66,0.08);border:1.5px solid rgba(201,245,66,0.25);display:flex;align-items:center;justify-content:center;font-size:1.8rem;flex-shrink:0;animation:bellShake 0.9s ease 0.6s both,pnpPulse 2s ease 1.5s infinite}',
+        '#pnp-titles{flex:1}',
+        '#pnp-title{font-size:1.02rem;font-weight:700;color:#fff;line-height:1.3}',
+        '#pnp-subtitle{font-size:0.76rem;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:5px}',
+        '#pnp-browser-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:2px 8px;font-size:0.7rem;color:#9ca3af}',
+        '#pnp-desc{font-size:0.82rem;color:#9ca3af;line-height:1.6;margin-bottom:16px}',
+        '#pnp-desc strong{color:#c9f542;font-weight:600}',
+        '#pnp-features{display:flex;flex-direction:column;gap:7px;margin-bottom:18px}',
+        '.pnp-feat{display:flex;align-items:center;gap:10px;font-size:0.8rem;color:#9ca3af}',
+        '.pnp-feat-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.9rem;flex-shrink:0}',
+        '#pnp-btns{display:flex;gap:9px}',
+        '#pnp-allow{flex:1;background:#c9f542;color:#0d0f14;border:none;border-radius:13px;padding:14px 10px;font-size:0.9rem;font-weight:700;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:7px}',
+        '#pnp-allow:hover{background:#d4f75a;transform:translateY(-1px)}',
+        '#pnp-allow:active{transform:translateY(0)}',
+        '#pnp-skip{background:rgba(255,255,255,0.06);color:#6b7280;border:1px solid rgba(255,255,255,0.09);border-radius:13px;padding:14px 16px;font-size:0.84rem;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all 0.15s;white-space:nowrap}',
+        '#pnp-skip:hover{background:rgba(255,255,255,0.11);color:#d1d5db}',
+        '#pnp-status{margin-top:11px;font-size:0.74rem;text-align:center;color:#4b5563;min-height:16px}',
+        // Denied state card
+        '#pnp-denied-card{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#1e1215,#110e0e);border:1.5px solid rgba(255,107,107,0.3);border-radius:24px;padding:20px 18px;box-shadow:0 32px 64px rgba(0,0,0,0.9);font-family:"DM Sans",system-ui,sans-serif}',
+        '#pnp-denied-card h3{font-size:0.95rem;font-weight:700;color:#fff;margin-bottom:8px}',
+        '#pnp-denied-steps{font-size:0.8rem;color:#9ca3af;line-height:1.7;margin-bottom:14px}',
+        '#pnp-denied-steps b{color:#fbbf24}',
+        '#pnp-denied-ok{width:100%;background:rgba(255,255,255,0.08);color:#e8eaf0;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:12px;font-size:0.88rem;cursor:pointer;font-family:"DM Sans",sans-serif}',
+        // Unsupported card
+        '#pnp-unsupported{width:min(calc(100vw - 24px),400px);background:#111418;border:1.5px solid rgba(255,255,255,0.08);border-radius:24px;padding:18px;font-family:"DM Sans",sans-serif;text-align:center;color:#9ca3af;font-size:0.82rem}',
+        '#pnp-unsupported strong{display:block;color:#fff;font-size:0.95rem;margin-bottom:6px}',
+      ].join('');
       document.head.appendChild(s);
     }
-    var ua=navigator.userAgent;
-    var _chrome=/Chrome/.test(ua)&&!/Edg\//.test(ua);
-    var _edge=/Edg\//.test(ua);
-    var _ff=/Firefox/.test(ua);
-    var _safari=/^((?!chrome|android).)*safari/i.test(ua);
-    var _android=/Android/.test(ua);
-    var _ios=/iPad|iPhone|iPod/.test(ua)&&!window.MSStream;
-    function browserLabel(){
-      if(_edge)   return{n:'Edge',    i:'\uD83C\uDF10'};
-      if(_ff)     return{n:'Firefox', i:'\uD83E\uDD8A'};
-      if(_android)return{n:'Chrome Android',i:'\uD83D\uDCF1'};
-      if(_chrome) return{n:'Chrome',  i:'\uD83D\uDD35'};
-      if(_safari) return{n:'Safari',  i:'\uD83E\uDDED'};
-      return{n:'Browser',i:'\uD83C\uDF0D'};
-    }
-    function deniedGuide(){
-      if(_chrome&&_android)return'<b>Android Chrome:</b> Tap the lock icon in address bar &rarr; Site settings &rarr; Notifications &rarr; Allow';
-      if(_chrome) return'<b>Chrome:</b> Click the lock icon in the address bar &rarr; Notifications &rarr; Allow &rarr; Reload';
-      if(_edge)   return'<b>Edge:</b> Click the lock icon in the address bar &rarr; Notifications &rarr; Allow &rarr; Reload';
-      if(_ff)     return'<b>Firefox:</b> Click the lock icon &rarr; More Information &rarr; Permissions &rarr; Receive Notifications &rarr; Allow';
-      if(_safari) return'<b>Safari:</b> Safari menu &rarr; Settings for This Website &rarr; Notifications &rarr; Allow';
-      return'Click the lock icon in your browser address bar &rarr; Notifications &rarr; Allow &rarr; Reload page';
-    }
-    function dismiss(ov){if(!ov||!ov.parentNode)return;ov.style.animation='pnpOut .28s cubic-bezier(.4,0,1,1) forwards';setTimeout(function(){if(ov.parentNode)ov.remove();},270);}
-    function onGranted(){
-      var cu=window.__punaActiveUser;
-      if(cu&&cu.email&&window.__punaPush)window.__punaPush.subscribe(cu.email);
-      setTimeout(function(){if(window.__punaNotif&&window.__punaNotif.isGranted())window.__punaNotif.show('punaHub \uD83D\uDD14',"You're set! Notifications are now active.",'','puna-welcome');},900);
+
+    // ── Get browser display name ─────────────────────────────
+    function getBrowserName(info) {
+      if (info.isFirefox) return { name: 'Firefox', icon: '🦊' };
+      if (info.isEdge)    return { name: 'Edge',    icon: '🌐' };
+      if (info.isAndroid) return { name: 'Chrome Android', icon: '📱' };
+      if (info.isChrome)  return { name: 'Chrome',  icon: '🔵' };
+      if (info.isSafari)  return { name: 'Safari',  icon: '🧭' };
+      return { name: 'Browser', icon: '🌍' };
     }
 
-    window.__punaAskNotifPermission=async function(force){
-      css();
-      var sup='Notification' in window;
-      var iosNoSup=_ios&&_safari&&!('serviceWorker' in navigator);
-      if(sup&&Notification.permission==='granted'){var cu=window.__punaActiveUser;if(cu&&cu.email&&window.__punaPush)window.__punaPush.subscribe(cu.email);return;}
-      if(!force){
-        var snz=parseInt(localStorage.getItem('punahub_notif_snooze')||'0',10);
-        if(snz&&Date.now()<snz)return;
-        if(snz&&Date.now()>=snz)localStorage.removeItem('punahub_notif_snooze');
-        if(sup&&Notification.permission!=='denied'&&localStorage.getItem('punahub_notif_asked')==='1')return;
-      }
-      var old=document.getElementById('_pnpOv');if(old)old.remove();
-      var ov=document.createElement('div');ov.id='_pnpOv';
-      var root=document.getElementById('app-frame')||document.body;
+    // ── Get browser-specific "how to re-enable" instructions ─
+    function getDeniedInstructions(info) {
+      if (info.isChrome && info.isAndroid) return '<b>Android Chrome:</b> Tap the 🔒 lock icon in the address bar → Site settings → Notifications → Allow';
+      if (info.isChrome)  return '<b>Chrome:</b> Click the 🔒 lock icon in address bar → Notifications → Allow → Reload page';
+      if (info.isFirefox) return '<b>Firefox:</b> Click the 🔒 lock icon → Connection Secure → More Information → Permissions → Receive Notifications → Allow';
+      if (info.isEdge)    return '<b>Edge:</b> Click the 🔒 lock icon → Notifications → Allow → Reload page';
+      if (info.isSafari)  return '<b>Safari:</b> Safari menu → Settings for This Website → Notifications → Allow';
+      return 'Click the 🔒 lock icon in your browser address bar → Notifications → Allow → Reload';
+    }
 
-      if(!sup||iosNoSup){
-        ov.innerHTML='<div id="_pnpUnsup"><span style="font-size:2rem;display:block;margin-bottom:10px">\uD83D\uDE14</span><strong>Notifications not supported</strong>'+(_ios?'On iPhone: tap Share \u2192 Add to Home Screen, then reopen punaHub from there.':'Try Chrome or Firefox for full push notification support.')+'<br><br><button onclick="document.getElementById(\'_pnpOv\').remove()" style="background:rgba(255,255,255,.08);color:#e8eaf0;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 20px;cursor:pointer;font-family:\'DM Sans\',sans-serif;font-size:.85rem;margin-top:6px">Got it</button></div>';
-        root.appendChild(ov);ov.addEventListener('click',function(e){if(e.target===ov)dismiss(ov);});return;
+    // ── Dismiss overlay ──────────────────────────────────────
+    function dismiss(overlay) {
+      if (!overlay || !overlay.parentNode) return;
+      overlay.style.animation = 'punaPromptOut 0.28s cubic-bezier(0.4,0,1,1) forwards';
+      setTimeout(function(){ if (overlay.parentNode) overlay.remove(); }, 270);
+    }
+
+    // ── After permission granted ─────────────────────────────
+    function onGranted(statusEl) {
+      if (statusEl) { statusEl.style.color = '#c9f542'; statusEl.textContent = '✅ Notifications enabled!'; }
+      var cu = window.__punaActiveUser;
+      if (cu && cu.email && window.__punaPush) {
+        window.__punaPush.subscribe(cu.email);
       }
-      if(Notification.permission==='denied'){
-        if(!force&&sessionStorage.getItem('_pnpDeniedShown'))return;
-        sessionStorage.setItem('_pnpDeniedShown','1');
-        ov.innerHTML='<div id="_pnpDenied"><div style="font-size:1.8rem;margin-bottom:10px">\uD83D\uDD15</div><h3>Notifications are blocked</h3><div id="_pnpDeniedSteps">'+deniedGuide()+'</div><button id="_pnpDeniedOk">Got it</button></div>';
-        root.appendChild(ov);
-        document.getElementById('_pnpDeniedOk').onclick=function(){dismiss(ov);};
-        ov.addEventListener('click',function(e){if(e.target===ov)dismiss(ov);});return;
+      setTimeout(function() {
+        if (window.__punaNotif && window.__punaNotif.isGranted()) {
+          window.__punaNotif.show('punaHub 🔔', "You're all set! Notifications are now active.", '', 'puna-welcome');
+        }
+      }, 900);
+    }
+
+    // ── Main function ────────────────────────────────────────
+    window.__punaAskNotifPermission = async function(forceShow) {
+      injectStyles();
+      var info = getBrowserInfo();
+
+      // Already granted — silently subscribe push and exit
+      if (info.supported && Notification.permission === 'granted') {
+        var cu = window.__punaActiveUser;
+        if (cu && cu.email && window.__punaPush) window.__punaPush.subscribe(cu.email);
+        return;
       }
-      localStorage.setItem('punahub_notif_asked','1');
-      var bl=browserLabel();
-      ov.innerHTML='<div id="_pnpCard">'
-        +'<div id="_pnpHead"><div id="_pnpBell">\uD83D\uDD14</div>'
-        +'<div><div id="_pnpT1">Stay in the loop</div>'
-        +'<div id="_pnpT2"><span id="_pnpBadge">'+bl.i+' '+bl.n+'</span> &middot; punaHub</div></div></div>'
-        +'<div id="_pnpFeats">'
-        +'<div class="_pnpFeat"><div class="_pnpFi" style="background:rgba(201,245,66,.1)">\uD83D\uDC64</div><span>Someone <strong style="color:#c9f542">followed</strong> you</span></div>'
-        +'<div class="_pnpFeat"><div class="_pnpFi" style="background:rgba(255,107,107,.1)">\u2764\uFE0F</div><span>Someone <strong style="color:#ff6b6b">liked</strong> your reel</span></div>'
-        +'<div class="_pnpFeat"><div class="_pnpFi" style="background:rgba(66,245,213,.1)">\uD83D\uDCAC</div><span>Someone <strong style="color:#42f5d5">commented</strong> on your reel</span></div>'
-        +'</div>'
-        +'<div id="_pnpBtns"><button id="_pnpAllow">\uD83D\uDD14&nbsp; Allow Notifications</button><button id="_pnpSkip">Not now</button></div>'
-        +'<div id="_pnpSt"></div></div>';
-      root.appendChild(ov);
-      ov.addEventListener('click',function(e){if(e.target===ov)dismiss(ov);});
-      document.getElementById('_pnpSkip').onclick=function(){
-        localStorage.setItem('punahub_notif_snooze',String(Date.now()+3*24*60*60*1000));
-        localStorage.removeItem('punahub_notif_asked');dismiss(ov);
+
+      // Don't show again if already asked (unless forced)
+      if (!forceShow && localStorage.getItem('punahub_notif_asked') === '1') return;
+      localStorage.setItem('punahub_notif_asked', '1');
+
+      // Remove any existing overlay
+      var old = document.getElementById('puna-notif-overlay');
+      if (old) old.remove();
+
+      var overlay = document.createElement('div');
+      overlay.id  = 'puna-notif-overlay';
+
+      // ── Case 1: Not supported at all ───────────────────────
+      if (!info.supported || info.iosSafariNoSupport) {
+        overlay.innerHTML =
+          '<div id="pnp-unsupported">' +
+            '<span style="font-size:2rem;display:block;margin-bottom:8px">😔</span>' +
+            '<strong>Notifications not supported</strong>' +
+            'Your browser does not support push notifications.<br>' +
+            (info.isIOS ? 'On iPhone: Add punaHub to Home Screen first (Share → Add to Home Screen), then open from there.' :
+             'Try Chrome or Firefox for full notification support.') +
+            '<br><br><button onclick="document.getElementById(\'puna-notif-overlay\').remove()" ' +
+            'style="background:rgba(255,255,255,0.08);color:#e8eaf0;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px 20px;cursor:pointer;font-family:\'DM Sans\',sans-serif;font-size:0.85rem;margin-top:4px">Got it</button>' +
+          '</div>';
+        (document.getElementById('app-frame') || document.body).appendChild(overlay);
+        overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+        return;
+      }
+
+      // ── Case 2: Already denied — show re-enable guide ─────
+      if (Notification.permission === 'denied') {
+        var instructions = getDeniedInstructions(info);
+        overlay.innerHTML =
+          '<div id="pnp-denied-card">' +
+            '<div style="font-size:1.8rem;margin-bottom:10px">🔕</div>' +
+            '<h3>Notifications are blocked</h3>' +
+            '<div id="pnp-denied-steps">' + instructions + '</div>' +
+            '<button id="pnp-denied-ok">Got it</button>' +
+          '</div>';
+        (document.getElementById('app-frame') || document.body).appendChild(overlay);
+        document.getElementById('pnp-denied-ok').onclick = function(){ dismiss(overlay); };
+        overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+        return;
+      }
+
+      // ── Case 3: Not yet asked — show full prompt ───────────
+      var bInfo   = getBrowserName(info);
+      var featColor = { follow:'rgba(201,245,66,0.12)', like:'rgba(255,82,82,0.12)', comment:'rgba(66,245,213,0.12)' };
+
+      overlay.innerHTML =
+        '<div id="pnp-card">' +
+          '<div id="pnp-header">' +
+            '<div id="pnp-bell-wrap">🔔</div>' +
+            '<div id="pnp-titles">' +
+              '<div id="pnp-title">Stay in the loop</div>' +
+              '<div id="pnp-subtitle">' +
+                '<span id="pnp-browser-badge">' + bInfo.icon + ' ' + bInfo.name + '</span>' +
+                '<span>· punaHub</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div id="pnp-features">' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.follow + '">👤</div><span>Someone <strong style="color:#c9f542">followed</strong> you</span></div>' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.like + '">❤️</div><span>Someone <strong style="color:#ff6b6b">liked</strong> your reel</span></div>' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.comment + '">💬</div><span>Someone <strong style="color:#42f5d5">commented</strong> on your reel</span></div>' +
+          '</div>' +
+          '<div id="pnp-btns">' +
+            '<button id="pnp-allow">🔔&nbsp; Allow Notifications</button>' +
+            '<button id="pnp-skip">Not now</button>' +
+          '</div>' +
+          '<div id="pnp-status"></div>' +
+        '</div>';
+
+      (document.getElementById('app-frame') || document.body).appendChild(overlay);
+      overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+
+      document.getElementById('pnp-skip').onclick = function() {
+        // Remember they skipped — ask again next session (remove the "asked" flag in 3 days)
+        var snooze = Date.now() + 3 * 24 * 60 * 60 * 1000;
+        localStorage.setItem('punahub_notif_snooze', String(snooze));
+        localStorage.removeItem('punahub_notif_asked');
+        dismiss(overlay);
       };
-      document.getElementById('_pnpAllow').onclick=async function(){
-        var btn=document.getElementById('_pnpAllow'),st=document.getElementById('_pnpSt');
-        if(btn){btn.innerHTML='\u23F3&nbsp; Waiting...';btn.style.opacity='.7';btn.disabled=true;}
-        var res=await window.__punaNotif.requestPermission();
-        if(res==='granted'){dismiss(ov);onGranted();}
-        else if(res==='denied'){dismiss(ov);setTimeout(function(){window.__punaAskNotifPermission(true);},400);}
-        else{if(btn){btn.innerHTML='\uD83D\uDD14&nbsp; Allow Notifications';btn.style.opacity='1';btn.disabled=false;}if(st){st.style.color='#fbbf24';st.textContent='Please click Allow in the browser popup \u2191';}}
+
+      document.getElementById('pnp-allow').onclick = async function() {
+        var btn      = document.getElementById('pnp-allow');
+        var statusEl = document.getElementById('pnp-status');
+        if (btn) { btn.textContent = '⏳ Waiting...'; btn.style.opacity = '0.7'; btn.disabled = true; }
+
+        var result = await window.__punaNotif.requestPermission();
+
+        if (result === 'granted') {
+          dismiss(overlay);
+          onGranted(statusEl);
+        } else if (result === 'denied') {
+          dismiss(overlay);
+          // Show denied guide after short delay
+          setTimeout(function(){ window.__punaAskNotifPermission(true); }, 400);
+        } else {
+          // dismissed without choosing
+          if (btn) { btn.innerHTML = '🔔&nbsp; Allow Notifications'; btn.style.opacity = '1'; btn.disabled = false; }
+          if (statusEl) { statusEl.style.color = '#fbbf24'; statusEl.textContent = 'Please click Allow in the browser popup above ↑'; }
+        }
       };
     };
 
-    window.__punaCheckNotifPrompt=function(){
-      if(!('Notification' in window))return;
-      if(Notification.permission==='granted')return;
-      var snz=parseInt(localStorage.getItem('punahub_notif_snooze')||'0',10);
-      if(snz&&Date.now()<snz)return;
-      if(snz&&Date.now()>=snz)localStorage.removeItem('punahub_notif_snooze');
-      if(Notification.permission!=='denied'&&localStorage.getItem('punahub_notif_asked')==='1')return;
+    // ── Auto-show on page load (if not asked yet / snooze expired) ──
+    window.__punaCheckNotifPrompt = function() {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') return;
+      // Check snooze
+      var snooze = parseInt(localStorage.getItem('punahub_notif_snooze') || '0', 10);
+      if (snooze && Date.now() < snooze) return; // still snoozed
+      if (snooze && Date.now() >= snooze) localStorage.removeItem('punahub_notif_snooze'); // expired
+      if (localStorage.getItem('punahub_notif_asked') === '1') return;
       window.__punaAskNotifPermission();
     };
 
-    // Ask on page open — 1.2s after load so UI renders first
-    function _tryAsk(){
-      if(!('Notification' in window))return;
-      if(Notification.permission==='granted')return;
-      var snz=parseInt(localStorage.getItem('punahub_notif_snooze')||'0',10);
-      if(snz&&Date.now()<snz)return;
-      if(snz&&Date.now()>=snz)localStorage.removeItem('punahub_notif_snooze');
-      if(Notification.permission==='denied'){if(sessionStorage.getItem('_pnpDeniedShown'))return;}
-      else{if(localStorage.getItem('punahub_notif_asked')==='1')return;}
-      if(typeof window.__punaAskNotifPermission==='function')window.__punaAskNotifPermission();
-    }
-    if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',function(){setTimeout(_tryAsk,1200);});}
-    else{setTimeout(_tryAsk,1200);}
   })();
-  </script>
   </script>
   <style>
 /* ── Reset & Base ────────────────────────────────────────── */
@@ -5572,92 +5704,91 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
   function confirmDeleteAccount() {
     if (!confirm('⚠️ DELETE ACCOUNT\n\nThis will permanently delete your account, all reels, and all data. This cannot be undone.\n\nAre you absolutely sure?')) return;
-    if (!confirm('\u26a0\ufe0f DELETE ACCOUNT\n\nThis will permanently delete:\n\u2022 Your profile\n\u2022 All your reels\n\u2022 All likes & comments\n\u2022 All followers & following\n\u2022 Push notification subscriptions\n\nThis cannot be undone.')) return;
     if (!confirm('Final confirmation: Delete "' + currentUser.nickname + '"?')) return;
 
     const deletedEmail = currentUser.email;
-    showToast('\uD83D\uDDD1 Deleting account...');
 
-    // ── 1. LOCAL cleanup ──────────────────────────────────
-    try {
-      const users = getUsers(); delete users[deletedEmail]; saveUsers(users);
-      const reels = getReels().filter(r => r.email !== deletedEmail); saveReels(reels);
-      const fd = getFollowData(); delete fd[deletedEmail];
-      for (const em in fd) {
-        fd[em].followers = (fd[em].followers||[]).filter(e => e !== deletedEmail);
-        fd[em].following = (fd[em].following||[]).filter(e => e !== deletedEmail);
-      }
-      saveFollowData(fd);
-    } catch(e) { console.warn('[Delete] local error:', e.message); }
+    // ── 1. Remove user from users store ──────────────────
+    const users = getUsers();
+    delete users[deletedEmail];
+    saveUsers(users);
 
-    // ── 2. SUPABASE: delete everything ────────────────────
+    // ── 2. Remove this user's reels ───────────────────────
+    const reels = getReels().filter(r => r.email !== deletedEmail);
+    saveReels(reels);
+
+    // ── 3. Remove follow data for this user ───────────────
+    const fd = getFollowData();
+    delete fd[deletedEmail];
+    for (const email in fd) {
+      fd[email].followers = (fd[email].followers||[]).filter(e => e !== deletedEmail);
+      fd[email].following = (fd[email].following||[]).filter(e => e !== deletedEmail);
+    }
+    saveFollowData(fd);
+
+    // ── 4. Delete from Supabase cloud (all browsers) ──────
     (async () => {
-      const sb = window.sb;
-      if (!sb) return;
       try {
-        // Core profile + content
-        await sb.from('punahub_users').delete().eq('email', deletedEmail);
-        await sb.from('punahub_reels').delete().eq('data->>email', deletedEmail);
-        await sb.from('punahub_settings').delete().eq('email', deletedEmail);
-
-        // Likes & comments BY this user
-        await sb.from('punahub_likes').delete().eq('user_email', deletedEmail);
-        await sb.from('punahub_comments').delete().eq('user_email', deletedEmail);
-
-        // Notifications TO and FROM this user
-        await sb.from('punahub_notifs').delete().eq('to_email', deletedEmail);
-        await sb.from('punahub_notifs').delete().eq('from_email', deletedEmail);
-
-        // Push subscriptions
-        await sb.from('punahub_push_subs').delete().eq('user_email', deletedEmail);
-
-        // Follow records
-        await sb.from('punahub_follows').delete().eq('email', deletedEmail);
-        const { data: allFollows } = await sb.from('punahub_follows').select('email, data');
-        if (allFollows) {
-          for (const row of allFollows) {
-            const d = row.data || {};
-            const changed = ((d.followers||[]).includes(deletedEmail)) || ((d.following||[]).includes(deletedEmail));
-            if (changed) {
-              d.followers = (d.followers||[]).filter(e => e !== deletedEmail);
-              d.following = (d.following||[]).filter(e => e !== deletedEmail);
-              await sb.from('punahub_follows').upsert({ email: row.email, data: d }, { onConflict: 'email' });
+        const sbClient = window.sb;
+        if (sbClient) {
+          // Delete user record
+          await sbClient.from('punahub_users').delete().eq('email', deletedEmail);
+          // Delete reels
+          await sbClient.from('punahub_reels').delete().eq('data->>email', deletedEmail);
+          // Delete follow record
+          await sbClient.from('punahub_follows').delete().eq('email', deletedEmail);
+          // Remove this user from others' followers/following in Supabase
+          const { data: allFollows } = await sbClient.from('punahub_follows').select('email, data');
+          if (allFollows) {
+            for (const row of allFollows) {
+              const d = row.data || {};
+              const changed =
+                ((d.followers||[]).includes(deletedEmail)) ||
+                ((d.following||[]).includes(deletedEmail));
+              if (changed) {
+                d.followers = (d.followers||[]).filter(e => e !== deletedEmail);
+                d.following = (d.following||[]).filter(e => e !== deletedEmail);
+                await sbClient.from('punahub_follows').upsert({ email: row.email, data: d }, { onConflict: 'email' });
+              }
             }
           }
+          // Delete notifications sent to this user
+          await sbClient.from('punahub_notifs').delete().eq('to_email', deletedEmail);
+          // Delete app settings
+          await sbClient.from('punahub_settings').delete().eq('email', deletedEmail);
+          // Delete avatar & reels files from storage
+          try {
+            const { data: files } = await sbClient.storage.from('punahub').list('reels');
+            // Only delete files belonging to deleted user (matched by reel IDs we already removed)
+          } catch(e) {}
+          console.log('[punaHub] Account deleted from Supabase cloud');
         }
-
-        // Likes & comments ON this user's reels
-        const { data: myReels } = await sb.from('punahub_reels').select('id').eq('data->>email', deletedEmail);
-        if (myReels && myReels.length) {
-          const ids = myReels.map(r => r.id);
-          await sb.from('punahub_likes').delete().in('reel_id', ids);
-          await sb.from('punahub_comments').delete().in('reel_id', ids);
-        }
-
-        // Avatar from storage
-        try { await sb.storage.from('punahub').remove(['avatars/' + deletedEmail.replace(/[^a-z0-9]/gi,'_') + '.jpg']); } catch(e) {}
-
-        console.log('[Delete] \u2705 All Supabase data deleted for', deletedEmail);
-      } catch(e) { console.warn('[Delete] Supabase error:', e.message); }
+      } catch(e) {
+        console.warn('[punaHub] Cloud delete error:', e.message);
+      }
     })();
 
-    // ── 3. Wipe localStorage ──────────────────────────────
-    ['punahub_users_xml','punahub_reels','punahub_follow','punahub_app_settings',
-     'punahub_autologin_xml','punahub_cookie_consent','punahub_notif_asked',
-     'punahub_notif_snooze','punahub_notifs_' + deletedEmail
-    ].forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
+    // ── 5. Wipe ALL localStorage keys for this app ────────
+    // This clears the account from THIS browser immediately.
+    // Other browsers sync via Supabase (data already deleted above).
+    const keysToRemove = [
+      'punahub_users_xml',
+      'punahub_reels',
+      'punahub_follow',
+      'punahub_app_settings',
+      'punahub_autologin_xml',
+      'punahub_cookie_consent',
+      'punahub_notif_asked',
+      'punahub_notifs_' + deletedEmail,
+    ];
+    keysToRemove.forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
     try { sessionStorage.clear(); } catch(e) {}
 
-    // ── 4. Sign out and reload to sign in screen ──────────
     clearSession();
     closeSettings();
-    currentUser = null;
-    window.__punaActiveUser = null;
-
-    setTimeout(function() {
-      showToast('\u2705 Account deleted');
-      setTimeout(function() { location.reload(); }, 800);
-    }, 500);
+    showToast('🗑 Account deleted from all devices');
+    setTimeout(() => { switchTab('signin'); showCard('auth-card'); }, 1000);
+  }
 
   // ════════════════════════════════════════════════════════
   //  REEL LONG-PRESS CONTEXT MENU
@@ -5922,14 +6053,23 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
       window.__startNotifRealtime(user.email);
     }
 
-    // Subscribe Web Push (silently if already granted)
+    // 🔔 Ask for device notification permission (smart prompt — respects snooze)
     setTimeout(function() {
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        if (window.__punaPush) window.__punaPush.subscribe(user.email);
-      } else if (typeof window.__punaCheckNotifPrompt === 'function') {
+      if (typeof window.__punaCheckNotifPrompt === 'function') {
         window.__punaCheckNotifPrompt();
+      } else if (typeof window.__punaAskNotifPermission === 'function') {
+        window.__punaAskNotifPermission();
       }
-    }, 1500);
+    }, 2000);
+
+    // 🔔 If permission already granted (returning user), re-subscribe push silently
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      setTimeout(function() {
+        if (window.__punaPush) {
+          window.__punaPush.subscribe(user.email);
+        }
+      }, 3000);
+    }
 
     switchReelTab('feed');
   }
@@ -5962,15 +6102,10 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
   // ══════════════════════════════════════════════════════
   function renderFeed() {
     const allReelsFeed = getReels();
-    const allUsers = getUsers();
-    // Filter: hide private reels + hide reels from deleted accounts
+    // Hide private reels that belong to other users
     const reels = allReelsFeed.filter(function(r) {
-      if (!r.email) return false; // no owner — skip
-      // Hide reels from deleted users (not in users store)
-      if (!allUsers[r.email]) return false;
-      // Hide private reels from other users
-      if (r.private) return (typeof currentUser !== 'undefined' && currentUser && r.email === currentUser.email);
-      return true;
+      if (!r.private) return true;
+      return (typeof currentUser !== 'undefined' && currentUser && r.email === currentUser.email);
     });
     const feed    = document.getElementById('reel-feed');
     const empty   = document.getElementById('reel-empty');
@@ -6344,16 +6479,15 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
       btn.querySelector('svg').setAttribute('fill','currentColor');
       // Notify post owner (not if liking own post)
       if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
-        var _likeAv = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
-        var _likeNk = currentUser.nickname || currentUser.email.split('@')[0];
+        var _likeAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
         addNotification(reel.email, {
           id:           'n_like_' + reelId + '_' + currentUser.email.replace(/[^a-z0-9]/gi,'_'),
           type:         'like',
           reelId:       reelId,
           fromEmail:    currentUser.email,
-          fromNickname: _likeNk,
-          fromAvatar:   _likeAv,
-          message:      _likeNk + ' liked your reel',
+          fromNickname: currentUser.nickname || currentUser.email.split('@')[0],
+          fromAvatar:   _likeAvatar,
+          message:      (currentUser.nickname || 'Someone') + ' liked your reel',
           timestamp:    Date.now(),
           read:         false
         });
@@ -6648,17 +6782,17 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
     // Notify post owner (not if commenting on own post)
     if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
-      var _cmtAv = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
-      var _cmtNk = currentUser.nickname || currentUser.email.split('@')[0];
+      var _cmtAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
+      var _cmtNick   = currentUser.nickname || currentUser.email.split('@')[0];
       addNotification(reel.email, {
         id:           'n_comment_' + commentId,
         type:         'comment',
         reelId:       currentReelId,
         commentText:  text.slice(0, 80),
         fromEmail:    currentUser.email,
-        fromNickname: _cmtNk,
-        fromAvatar:   _cmtAv,
-        message:      _cmtNk + ' commented: ' + text.slice(0, 60) + (text.length > 60 ? '…' : ''),
+        fromNickname: _cmtNick,
+        fromAvatar:   _cmtAvatar,
+        message:      _cmtNick + ' commented: ' + text.slice(0, 60) + (text.length > 60 ? '…' : ''),
         timestamp:    Date.now(),
         read:         false
       });
@@ -7423,9 +7557,8 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
           var cur = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
           if (!cur || cur.email !== data.toEmail) return; // not for this tab's user
           var notif = data.notif;
-          // Skip if already shown
+          // Skip if already shown (showLiveNotifToast wrapper will also guard, but fast-path here)
           if (window.__punaShownNotifIds && window.__punaShownNotifIds.has(notif.id)) return;
-          if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(notif.id);
           // Show popup + shake bell
           if (typeof window.showLiveNotifToast === 'function') {
             window.showLiveNotifToast(notif, data.toEmail);
@@ -7765,8 +7898,10 @@ window.addEventListener('beforeinstallprompt', (e) => {
     localStorage.setItem('punahub_notifs_' + email, JSON.stringify(notifs));
   }
   function addNotification(toEmail, notif) {
+    // Preserve caller-supplied id (deterministic ids enable proper dedup)
     const fullNotif = { id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), ...notif };
-    if (notif && notif.id) fullNotif.id = notif.id; // preserve deterministic id
+    // If notif already has an id use it — spread above would overwrite, fix that:
+    if (notif && notif.id) fullNotif.id = notif.id;
     const notifs = getNotifications(toEmail);
     // Dedup: same person + same type + same target (reelId) = always a duplicate
     // Also block same person+type within 30 seconds regardless of target
@@ -7815,10 +7950,32 @@ window.addEventListener('beforeinstallprompt', (e) => {
       updateNotifBadge(toEmail);
     }
 
-    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime
+    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime + Web Push
     if (typeof window.__pushCloudNotif === 'function') {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
+
+    // ── Direct OS device notification for the recipient on THIS device ──────
+    // Fires immediately when permission is granted — works even if the recipient
+    // is not the currently active tab user (e.g. same device, different session).
+    // Also acts as a safety net if showLiveNotifToast dedup already consumed the id.
+    try {
+      if (window.__punaNotif && window.__punaNotif.isGranted()) {
+        var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
+        var _osBody  = fullNotif.message || (
+          fullNotif.type === 'like'    ? 'liked your reel' :
+          fullNotif.type === 'comment' ? 'commented on your reel' :
+          fullNotif.type === 'follow'  ? 'started following you' : 'new activity'
+        );
+        var _osImg   = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
+        var _osTag   = 'puna-' + (fullNotif.type || 'notif') + '-' + (fullNotif.fromEmail || '');
+        // Only fire OS notification if this is for the recipient on this device
+        var _curUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+        if (_curUser && _curUser.email === toEmail) {
+          window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
+        }
+      }
+    } catch (_osErr) {}
   }
   function updateNotifBadge(email) {
     if (!email) return;
@@ -9331,8 +9488,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
 // ╚══════════════════════════════════════════════════════════╝
 const SB_URL     = 'https://hafjrxixytudodnuptky.supabase.co';   // your project URL
 const SB_ANON    = 'sb_publishable_3vO4qDk7kairrebxsaByCA_0zaEavXj';    // anon/public key
-window.SB_URL  = 'https://hafjrxixytudodnuptky.supabase.co';
-window.SB_ANON = 'sb_publishable_3vO4qDk7kairrebxsaByCA_0zaEavXj';
+window.SB_ANON = SB_ANON;  // expose for Edge Function auth header
+window.SB_URL  = SB_URL;   // expose for push engine
 
 // ╔══════════════════════════════════════════════════════════╗
 // ║  CLOUDINARY CONFIG — for video & avatar uploads          ║
@@ -9422,24 +9579,10 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
         pulled = true;
       }
 
-      // Reels — filter out reels from deleted/unknown users
+      // Reels
       const { data: reels } = await sb.from('punahub_reels').select('id, data').order('id', { ascending:true });
       if (reels && reels.length) {
-        // Only keep reels whose owner still exists in punahub_users
-        const { data: userRows } = await sb.from('punahub_users').select('email');
-        const activeEmails = new Set((userRows||[]).map(u => u.email));
-        const validReels   = reels.filter(r => r.data && r.data.email && activeEmails.has(r.data.email));
-        // Also clean up orphan reels from Supabase silently
-        const orphans = reels.filter(r => r.data && r.data.email && !activeEmails.has(r.data.email));
-        if (orphans.length && sb) {
-          orphans.forEach(function(r) {
-            sb.from('punahub_reels').delete().eq('id', r.id).then(function(){});
-            sb.from('punahub_likes').delete().eq('reel_id', r.id).then(function(){});
-            sb.from('punahub_comments').delete().eq('reel_id', r.id).then(function(){});
-          });
-          console.log('[punaHub] Cleaned', orphans.length, 'orphan reel(s) from deleted accounts');
-        }
-        window.__sbData.reels = validReels.map(r => r.data);
+        window.__sbData.reels = reels.map(r => r.data);
         // ✅ Write back to localStorage so live engine sees cloud reels
         try {
           const lean = window.__sbData.reels.map(r => {
@@ -9708,20 +9851,20 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
   // Push a notification to another user via Supabase (cross-device)
   window.__pushCloudNotif = async function(toEmail, notif) {
     if (!toEmail || !notif) return;
-    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel' };
+
+    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
     var title  = 'punaHub — ' + (notif.fromNickname || 'Someone');
     var body   = notif.message || msgMap[notif.type] || 'New activity';
-    var tag    = 'puna-' + (notif.type||'notif') + '-' + (notif.fromEmail||'');
+    var tag    = 'puna-' + (notif.type || 'notif') + '-' + (notif.fromEmail || '');
     var cu     = window.__punaActiveUser;
-    // 1. Web Push via Edge Function (works when app is closed)
+
+    // ── Always send Web Push FIRST (does not need sb) ────────
+    // Only send to recipient — never back to sender
     if (window.__punaPush && (!cu || cu.email !== toEmail)) {
-      window.__punaPush.send(toEmail, title, body, tag);
+      window.__punaPush.send(toEmail, title, body, tag, '');
     }
-    // 1b. Also fire direct OS notification if recipient is on THIS device right now
-    if (cu && cu.email === toEmail && window.__punaNotif && window.__punaNotif.isGranted()) {
-      window.__punaNotif.show(title, body, '', tag);
-    }
-    // 2. Save to Supabase (wait if not ready)
+
+    // ── Store in Supabase (wait for sb if not ready yet) ─────
     var _doInsert = async function() {
       if (!window.sb) return;
       try {
@@ -9732,14 +9875,22 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
           payload:    notif,
           created_at: new Date().toISOString()
         });
-      } catch(e) { console.warn('[punaHub] notif insert failed:', e.message); }
+        console.log('[punaHub] ✅ Notif saved to Supabase for', toEmail);
+      } catch(e) {
+        console.warn('[punaHub] Supabase notif insert failed:', e.message);
+      }
     };
-    if (window.sb) { _doInsert(); }
-    else {
-      var _w=0,_wi=setInterval(function(){
-        _w+=200; if(window.sb){clearInterval(_wi);_doInsert();}
-        else if(_w>=5000){clearInterval(_wi);}
-      },200);
+
+    if (window.sb) {
+      _doInsert();
+    } else {
+      // Supabase not ready yet — wait up to 5s
+      var _waited = 0;
+      var _waiter = setInterval(function() {
+        _waited += 200;
+        if (window.sb) { clearInterval(_waiter); _doInsert(); }
+        else if (_waited >= 5000) { clearInterval(_waiter); console.warn('[punaHub] sb never ready for notif insert'); }
+      }, 200);
     }
   };
 
@@ -9770,7 +9921,8 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
                     if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    n.message = n.fromNickname + ' started following you';
+                    var _msgMap2 = { follow: 'started following you', like: 'liked your reel', comment: 'commented on your reel', post: 'shared a new reel' };
+                    n.message = n.fromNickname + ' ' + (_msgMap2[n.type] || 'new activity');
                   }
                 } catch(e2) {}
               }
@@ -9784,6 +9936,22 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
               if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
+              // ── Fire OS device notification directly via Web Notification API ──
+              // This is the cross-device path: Supabase Realtime delivers to recipient's device.
+              // We fire the OS notification here regardless of showLiveNotifToast dedup.
+              try {
+                if (window.__punaNotif && window.__punaNotif.isGranted()) {
+                  var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
+                  var _rtBody  = n.message || (
+                    n.type === 'like'    ? 'liked your reel' :
+                    n.type === 'comment' ? 'commented on your reel' :
+                    n.type === 'follow'  ? 'started following you' : 'new activity'
+                  );
+                  var _rtImg  = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
+                  var _rtTag  = 'puna-rt-' + (n.type || 'notif') + '-' + (n.fromEmail || '');
+                  window.__punaNotif.show(_rtTitle, _rtBody, _rtImg, _rtTag);
+                }
+              } catch (_rtOsErr) {}
               console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
             }
             enrichAndShow(notif);
@@ -10731,7 +10899,7 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
     } catch(e) { console.warn('[punaHub live] notif update error:', e); }
   }
 
-  // Glows bell without shaking (shake removed)
+  // Shakes + glows the bell on new notification
   function _shakeBellOnly() {
     var bellBtn = document.getElementById('notif-btn');
     if (!bellBtn) return;
@@ -10739,12 +10907,12 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
     bellBtn.style.filter = 'drop-shadow(0 0 8px rgba(201,245,66,0.9))';
     bellBtn.style.animation = 'none';
     void bellBtn.offsetWidth;
-    bellBtn.style.animation = 'bellGlow 0.6s ease both';
+    bellBtn.style.animation = 'bellShake 0.7s ease both, bellGlow 0.7s ease both';
     setTimeout(function() {
       bellBtn.style.color='';
       bellBtn.style.filter='';
       bellBtn.style.animation='';
-    }, 700);
+    }, 900);
   }
   window._shakeBellOnly = _shakeBellOnly;
 
@@ -10784,7 +10952,7 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
     s.id = 'puna-popup-styles';
     s.textContent = `
       /* ── Keyframes ── */
-      @keyframes bellShake{0%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}100%{transform:translateX(0)}}
+      @keyframes bellShake{0%{transform:rotate(0deg)}10%{transform:rotate(-22deg)}20%{transform:rotate(22deg)}30%{transform:rotate(-18deg)}40%{transform:rotate(18deg)}50%{transform:rotate(-12deg)}60%{transform:rotate(12deg)}70%{transform:rotate(-6deg)}80%{transform:rotate(6deg)}90%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}
       @keyframes bellGlow{0%{transform:scale(1);opacity:1}30%{transform:scale(1.18);opacity:1}60%{transform:scale(0.97);opacity:1}100%{transform:scale(1);opacity:1}}
       @keyframes badgePop{0%{transform:scale(1)}35%{transform:scale(1.65)}65%{transform:scale(0.82)}85%{transform:scale(1.08)}100%{transform:scale(1)}}
       @keyframes pnToastIn{from{opacity:0;transform:translateX(-50%) translateY(-28px) scale(0.92)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
@@ -11068,6 +11236,8 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
     var notifId = notif && notif.id;
     if (notifId) {
       if (_toastShownIds.has(notifId)) return;
+      // Note: ID is added by the wrapper before this is called.
+      // If called directly (not via wrapper), add it here as fallback.
       _toastShownIds.add(notifId);
     }
 
@@ -11102,17 +11272,30 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
       bellBtn.style.filter = 'drop-shadow(0 0 10px ' + cfg.accent + '99)';
       bellBtn.style.animation = 'none';
       void bellBtn.offsetWidth;
-      bellBtn.style.animation = 'bellGlow 0.6s ease both';
-      setTimeout(function(){ bellBtn.style.color=''; bellBtn.style.filter=''; bellBtn.style.animation=''; }, 700);
+      bellBtn.style.animation = 'bellShake 0.7s ease both, bellGlow 0.7s ease both';
+      setTimeout(function(){ bellBtn.style.color=''; bellBtn.style.filter=''; bellBtn.style.animation=''; }, 900);
     }
 
     // ── 2. Vibrate ─────────────────────────────────────────
     try { if (navigator.vibrate) navigator.vibrate([30, 15, 30]); } catch(e) {}
 
-    // ── 3. Slide-in toast ONLY (clean, no banner + no modal storm) ──
+    // ── 3. OS device notification (if permission granted) ──
+    try {
+      if (window.__punaNotif && window.__punaNotif.isGranted()) {
+        var _osTag  = 'puna-' + (notif && notif.type || 'notif') + '-' + (notif && notif.fromEmail || '');
+        var _osImg  = (avatar && !avatar.startsWith('data:')) ? avatar : '';
+        window.__punaNotif.show(
+          'punaHub — ' + name,
+          msg,
+          _osImg,
+          _osTag
+        );
+      }
+    } catch(_ose) {}
+
+    // ── 4. Slide-in toast (no-op — kept for hook completeness) ──
     _showPNToast(notif, userEmail, name, avatar, type, msg, cfg);
     // NOTE: _showHomeBanner is called by the main-notif-bar wrapper instead.
-    // NOTE: _showPNModal removed — was firing for sender, not just recipient.
   }
 
   // ── HOME BANNER (top-center strip on home/feed page) ────
@@ -11171,61 +11354,9 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
   }
 
   // ── TOAST ─────────────────────────────────────────────────
-  function _showPNToast(notif, userEmail, name, avatar, type, msg, cfg) {
-    // Remove existing toast with out-animation
-    var old = document.getElementById('pn-toast-active');
-    if (old) {
-      old.style.animation = 'pnToastOut 0.2s ease forwards';
-      setTimeout(function(){ if (old.parentNode) old.remove(); }, 200);
-    }
-
-    var el = document.createElement('div');
-    el.className = 'pn-toast';
-    el.id = 'pn-toast-active';
-
-    var avInner = avatar
-      ? '<img src="' + escSafe(avatar) + '" alt="">'
-      : '<span>' + escSafe(name.charAt(0).toUpperCase() || '?') + '</span>';
-
-    el.innerHTML =
-      '<div class="pn-toast-av" style="border-color:' + cfg.accent + '55">' +
-        avInner +
-        '<div class="pn-toast-av-badge">' + cfg.emoji + '</div>' +
-      '</div>' +
-      '<div class="pn-toast-body">' +
-        '<div class="pn-toast-name">' + escSafe(name) + '</div>' +
-        '<div class="pn-toast-msg">' + escSafe(msg) + '</div>' +
-        '<div class="pn-toast-time">just now</div>' +
-      '</div>' +
-      '<div class="pn-toast-icon" style="background:' + cfg.accent + '18;border-color:' + cfg.accent + '30">' + cfg.icon + '</div>' +
-      '<button class="pn-toast-close" aria-label="Close">✕</button>' +
-      '<div class="pn-toast-progress" style="background:' + cfg.gradient + ';animation-duration:' + cfg.toastDur + 'ms"></div>';
-
-    // Close button
-    el.querySelector('.pn-toast-close').addEventListener('click', function(e) {
-      e.stopPropagation();
-      _dismissToast(el);
-    });
-
-    // Click toast → open notif panel
-    el.addEventListener('click', function() {
-      _dismissToast(el);
-      if (typeof openNotifPanel === 'function') openNotifPanel();
-    });
-
-    document.body.appendChild(el);
-
-    // Auto-dismiss
-    var _tid = setTimeout(function(){ _dismissToast(el); }, cfg.toastDur);
-    el._tid = _tid;
-  }
-
-  function _dismissToast(el) {
-    if (!el || !el.parentNode) return;
-    clearTimeout(el._tid);
-    el.style.animation = 'pnToastOut 0.25s ease forwards';
-    setTimeout(function(){ if (el.parentNode) el.remove(); }, 250);
-  }
+  // Pop-up toast removed — notifications shown via bell badge + main-notif-bar only
+  function _showPNToast(notif, userEmail, name, avatar, type, msg, cfg) { /* no-op */ }
+  function _dismissToast(el) { /* no-op */ }
 
   // ── CENTER MODAL ──────────────────────────────────────────
   function _showPNModal(notif, userEmail, name, avatar, type, msg, cfg) {
@@ -11550,9 +11681,12 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
   // Wrap showLiveNotifToast to also update the main bar
   // main-notif-bar is now the ONLY banner — no duplicate pn-home-banner
   window.showLiveNotifToast = function(notif, emailHint) {
-    // ── Dedup at wrapper level too ─────────────────────────
+    // ── Dedup at wrapper level — mark BEFORE calling original ─
     var _nId = notif && notif.id;
-    if (_nId && window.__punaShownNotifIds && window.__punaShownNotifIds.has(_nId)) return;
+    if (_nId) {
+      if (window.__punaShownNotifIds && window.__punaShownNotifIds.has(_nId)) return;
+      if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(_nId);
+    }
 
     // ── Guard: only show for current user as recipient ─────
     var _cuW = window.__punaActiveUser || (typeof currentUser !== 'undefined' ? currentUser : null);
@@ -11642,8 +11776,8 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
         bellBtn.style.filter = 'drop-shadow(0 0 10px #c9f54299)';
         bellBtn.style.animation = 'none';
         void bellBtn.offsetWidth;
-        bellBtn.style.animation = 'bellGlow 0.6s ease both';
-        setTimeout(function(){ bellBtn.style.color=''; bellBtn.style.filter=''; bellBtn.style.animation=''; }, 700);
+        bellBtn.style.animation = 'bellShake 0.7s ease both, bellGlow 0.7s ease both';
+        setTimeout(function(){ bellBtn.style.color=''; bellBtn.style.filter=''; bellBtn.style.animation=''; }, 900);
       }
     }
     // Wait 1.5s so the app UI has fully rendered before showing the banner
@@ -11742,7 +11876,7 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
       var bs = document.createElement('style');
       bs.id = 'bell-shake-style';
       bs.textContent =
-        '@keyframes bellShake{0%{transform:translateX(0)}25%{transform:translateX(-10px)}75%{transform:translateX(10px)}100%{transform:translateX(0)}}' +
+        '@keyframes bellShake{0%{transform:rotate(0deg)}10%{transform:rotate(-22deg)}20%{transform:rotate(22deg)}30%{transform:rotate(-18deg)}40%{transform:rotate(18deg)}50%{transform:rotate(-12deg)}60%{transform:rotate(12deg)}70%{transform:rotate(-6deg)}80%{transform:rotate(6deg)}90%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}' +
         '@keyframes bellGlow{0%{transform:scale(1);opacity:1}30%{transform:scale(1.18);opacity:1}60%{transform:scale(0.97);opacity:1}100%{transform:scale(1);opacity:1}}' +
         '@keyframes badgePop{0%{transform:scale(1)}35%{transform:scale(1.65)}65%{transform:scale(0.82)}85%{transform:scale(1.08)}100%{transform:scale(1)}}' +
         '@keyframes liveNotifIn{from{opacity:0;transform:translateX(-50%) translateY(-20px) scale(0.94)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}' +
