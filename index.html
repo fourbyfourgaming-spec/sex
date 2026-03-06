@@ -230,20 +230,7 @@
           } catch(e) { reg = null; }
         }
         if (reg && reg.showNotification) {
-          // SW path — needed for Android background push
-          // On Windows/Desktop, blob-scoped SW showNotification() is silently blocked,
-          // so we also fire new Notification() directly as a guaranteed fallback.
-          var _isDesktop = !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-          if (_isDesktop) {
-            // Desktop: new Notification() is guaranteed to work; SW may silently fail
-            new Notification(title, {
-              body: opts.body, icon: opts.icon, badge: opts.badge,
-              tag: opts.tag, silent: false, renotify: true
-            });
-          } else {
-            // Android/mobile: SW path is required for background notifications
-            await reg.showNotification(title, opts);
-          }
+          await reg.showNotification(title, opts);
         } else {
           // Direct Notification API — always works on Windows Chrome/Edge/Firefox
           // Works on Android too when app is in foreground
@@ -529,9 +516,7 @@
         return;
       }
 
-      // Don't show again if already asked (unless forced)
-      if (!forceShow && localStorage.getItem('punahub_notif_asked') === '1') return;
-      localStorage.setItem('punahub_notif_asked', '1');
+      // Always show until permission is granted — no asked/snooze block
 
       // Remove any existing overlay
       var old = document.getElementById('puna-notif-overlay');
@@ -605,11 +590,7 @@
       overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
 
       document.getElementById('pnp-skip').onclick = function() {
-        // Remember they skipped — ask again next session (remove the "asked" flag in 3 days)
-        var snooze = Date.now() + 3 * 24 * 60 * 60 * 1000;
-        localStorage.setItem('punahub_notif_snooze', String(snooze));
-        localStorage.removeItem('punahub_notif_asked');
-        dismiss(overlay);
+        dismiss(overlay); // just close — will ask again next page load
       };
 
       document.getElementById('pnp-allow').onclick = async function() {
@@ -638,13 +619,20 @@
     window.__punaCheckNotifPrompt = function() {
       if (!('Notification' in window)) return;
       if (Notification.permission === 'granted') return;
-      // Check snooze
-      var snooze = parseInt(localStorage.getItem('punahub_notif_snooze') || '0', 10);
-      if (snooze && Date.now() < snooze) return; // still snoozed
-      if (snooze && Date.now() >= snooze) localStorage.removeItem('punahub_notif_snooze'); // expired
-      if (localStorage.getItem('punahub_notif_asked') === '1') return;
       window.__punaAskNotifPermission();
     };
+
+    // Fire on every page load — shows before login, every time, until Allow is clicked
+    (function() {
+      function _askOnLoad() {
+        if (!('Notification' in window) || Notification.permission === 'granted') return;
+        setTimeout(function() {
+          if (typeof window.__punaAskNotifPermission === 'function') window.__punaAskNotifPermission();
+        }, 800);
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _askOnLoad);
+      else _askOnLoad();
+    })();
 
   })();
   </script>
@@ -7952,21 +7940,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     // ── If this notification is FOR the current user in THIS tab ────────────
     const cur = typeof currentUser !== 'undefined' ? currentUser : null;
     if (cur && cur.email === toEmail) {
-      // Fire OS device notification BEFORE seeding __punaShownNotifIds.
-      // Seeding it first causes showLiveNotifToast wrapper to return early (dedup),
-      // which means __punaNotif.show() inside it never gets called.
-      try {
-        if (window.__punaNotif && window.__punaNotif.isGranted()) {
-          var _mm = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
-          window.__punaNotif.show(
-            'punaHub — ' + (fullNotif.fromNickname || 'Someone'),
-            fullNotif.message || ((fullNotif.fromNickname||'Someone') + ' ' + (_mm[fullNotif.type]||'new activity')),
-            (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '',
-            'puna-' + (fullNotif.type||'notif') + '-' + (fullNotif.fromEmail||'')
-          );
-        }
-      } catch(_ne) {}
-      // Now seed shown ID so the BroadcastChannel / storage event won't fire a 2nd toast
+      // Seed shown ID so the storage event dispatch below won't fire a second toast
       if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(fullNotif.id);
       if (typeof window.showLiveNotifToast === 'function') {
         window.showLiveNotifToast(fullNotif, toEmail);
@@ -9926,24 +9900,10 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
                     if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    var _rtMM = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
-                    n.message = n.fromNickname + ' ' + (_rtMM[n.type] || 'new activity');
+                    n.message = n.fromNickname + ' started following you';
                   }
                 } catch(e2) {}
               }
-              // Fire OS notification BEFORE the localStorage dedup check — the check
-              // can return early and block showLiveNotifToast from running.
-              try {
-                if (window.__punaNotif && window.__punaNotif.isGranted()) {
-                  var _rtMM2 = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
-                  window.__punaNotif.show(
-                    'punaHub — ' + (n.fromNickname || 'Someone'),
-                    n.message || ((n.fromNickname||'Someone') + ' ' + (_rtMM2[n.type]||'new activity')),
-                    (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '',
-                    'puna-rt-' + (n.type||'notif') + '-' + (n.fromEmail||'')
-                  );
-                }
-              } catch(_rte) {}
               // Write to localStorage
               var existing = [];
               try { existing = JSON.parse(localStorage.getItem('punahub_notifs_' + userEmail) || '[]'); } catch(e) {}
