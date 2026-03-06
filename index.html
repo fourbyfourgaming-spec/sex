@@ -5572,91 +5572,92 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
   function confirmDeleteAccount() {
     if (!confirm('⚠️ DELETE ACCOUNT\n\nThis will permanently delete your account, all reels, and all data. This cannot be undone.\n\nAre you absolutely sure?')) return;
+    if (!confirm('\u26a0\ufe0f DELETE ACCOUNT\n\nThis will permanently delete:\n\u2022 Your profile\n\u2022 All your reels\n\u2022 All likes & comments\n\u2022 All followers & following\n\u2022 Push notification subscriptions\n\nThis cannot be undone.')) return;
     if (!confirm('Final confirmation: Delete "' + currentUser.nickname + '"?')) return;
 
     const deletedEmail = currentUser.email;
+    showToast('\uD83D\uDDD1 Deleting account...');
 
-    // ── 1. Remove user from users store ──────────────────
-    const users = getUsers();
-    delete users[deletedEmail];
-    saveUsers(users);
+    // ── 1. LOCAL cleanup ──────────────────────────────────
+    try {
+      const users = getUsers(); delete users[deletedEmail]; saveUsers(users);
+      const reels = getReels().filter(r => r.email !== deletedEmail); saveReels(reels);
+      const fd = getFollowData(); delete fd[deletedEmail];
+      for (const em in fd) {
+        fd[em].followers = (fd[em].followers||[]).filter(e => e !== deletedEmail);
+        fd[em].following = (fd[em].following||[]).filter(e => e !== deletedEmail);
+      }
+      saveFollowData(fd);
+    } catch(e) { console.warn('[Delete] local error:', e.message); }
 
-    // ── 2. Remove this user's reels ───────────────────────
-    const reels = getReels().filter(r => r.email !== deletedEmail);
-    saveReels(reels);
-
-    // ── 3. Remove follow data for this user ───────────────
-    const fd = getFollowData();
-    delete fd[deletedEmail];
-    for (const email in fd) {
-      fd[email].followers = (fd[email].followers||[]).filter(e => e !== deletedEmail);
-      fd[email].following = (fd[email].following||[]).filter(e => e !== deletedEmail);
-    }
-    saveFollowData(fd);
-
-    // ── 4. Delete from Supabase cloud (all browsers) ──────
+    // ── 2. SUPABASE: delete everything ────────────────────
     (async () => {
+      const sb = window.sb;
+      if (!sb) return;
       try {
-        const sbClient = window.sb;
-        if (sbClient) {
-          // Delete user record
-          await sbClient.from('punahub_users').delete().eq('email', deletedEmail);
-          // Delete reels
-          await sbClient.from('punahub_reels').delete().eq('data->>email', deletedEmail);
-          // Delete follow record
-          await sbClient.from('punahub_follows').delete().eq('email', deletedEmail);
-          // Remove this user from others' followers/following in Supabase
-          const { data: allFollows } = await sbClient.from('punahub_follows').select('email, data');
-          if (allFollows) {
-            for (const row of allFollows) {
-              const d = row.data || {};
-              const changed =
-                ((d.followers||[]).includes(deletedEmail)) ||
-                ((d.following||[]).includes(deletedEmail));
-              if (changed) {
-                d.followers = (d.followers||[]).filter(e => e !== deletedEmail);
-                d.following = (d.following||[]).filter(e => e !== deletedEmail);
-                await sbClient.from('punahub_follows').upsert({ email: row.email, data: d }, { onConflict: 'email' });
-              }
+        // Core profile + content
+        await sb.from('punahub_users').delete().eq('email', deletedEmail);
+        await sb.from('punahub_reels').delete().eq('data->>email', deletedEmail);
+        await sb.from('punahub_settings').delete().eq('email', deletedEmail);
+
+        // Likes & comments BY this user
+        await sb.from('punahub_likes').delete().eq('user_email', deletedEmail);
+        await sb.from('punahub_comments').delete().eq('user_email', deletedEmail);
+
+        // Notifications TO and FROM this user
+        await sb.from('punahub_notifs').delete().eq('to_email', deletedEmail);
+        await sb.from('punahub_notifs').delete().eq('from_email', deletedEmail);
+
+        // Push subscriptions
+        await sb.from('punahub_push_subs').delete().eq('user_email', deletedEmail);
+
+        // Follow records
+        await sb.from('punahub_follows').delete().eq('email', deletedEmail);
+        const { data: allFollows } = await sb.from('punahub_follows').select('email, data');
+        if (allFollows) {
+          for (const row of allFollows) {
+            const d = row.data || {};
+            const changed = ((d.followers||[]).includes(deletedEmail)) || ((d.following||[]).includes(deletedEmail));
+            if (changed) {
+              d.followers = (d.followers||[]).filter(e => e !== deletedEmail);
+              d.following = (d.following||[]).filter(e => e !== deletedEmail);
+              await sb.from('punahub_follows').upsert({ email: row.email, data: d }, { onConflict: 'email' });
             }
           }
-          // Delete notifications sent to this user
-          await sbClient.from('punahub_notifs').delete().eq('to_email', deletedEmail);
-          // Delete app settings
-          await sbClient.from('punahub_settings').delete().eq('email', deletedEmail);
-          // Delete avatar & reels files from storage
-          try {
-            const { data: files } = await sbClient.storage.from('punahub').list('reels');
-            // Only delete files belonging to deleted user (matched by reel IDs we already removed)
-          } catch(e) {}
-          console.log('[punaHub] Account deleted from Supabase cloud');
         }
-      } catch(e) {
-        console.warn('[punaHub] Cloud delete error:', e.message);
-      }
+
+        // Likes & comments ON this user's reels
+        const { data: myReels } = await sb.from('punahub_reels').select('id').eq('data->>email', deletedEmail);
+        if (myReels && myReels.length) {
+          const ids = myReels.map(r => r.id);
+          await sb.from('punahub_likes').delete().in('reel_id', ids);
+          await sb.from('punahub_comments').delete().in('reel_id', ids);
+        }
+
+        // Avatar from storage
+        try { await sb.storage.from('punahub').remove(['avatars/' + deletedEmail.replace(/[^a-z0-9]/gi,'_') + '.jpg']); } catch(e) {}
+
+        console.log('[Delete] \u2705 All Supabase data deleted for', deletedEmail);
+      } catch(e) { console.warn('[Delete] Supabase error:', e.message); }
     })();
 
-    // ── 5. Wipe ALL localStorage keys for this app ────────
-    // This clears the account from THIS browser immediately.
-    // Other browsers sync via Supabase (data already deleted above).
-    const keysToRemove = [
-      'punahub_users_xml',
-      'punahub_reels',
-      'punahub_follow',
-      'punahub_app_settings',
-      'punahub_autologin_xml',
-      'punahub_cookie_consent',
-      'punahub_notif_asked',
-      'punahub_notifs_' + deletedEmail,
-    ];
-    keysToRemove.forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
+    // ── 3. Wipe localStorage ──────────────────────────────
+    ['punahub_users_xml','punahub_reels','punahub_follow','punahub_app_settings',
+     'punahub_autologin_xml','punahub_cookie_consent','punahub_notif_asked',
+     'punahub_notif_snooze','punahub_notifs_' + deletedEmail
+    ].forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
     try { sessionStorage.clear(); } catch(e) {}
 
+    // ── 4. Sign out and reload to sign in screen ──────────
     clearSession();
     closeSettings();
-    showToast('🗑 Account deleted from all devices');
-    setTimeout(() => { switchTab('signin'); showCard('auth-card'); }, 1000);
-  }
+    currentUser = null;
+    window.__punaActiveUser = null;
+
+    setTimeout(function() {
+      showToast('\u2705 Account deleted');
+      setTimeout(function() { location.reload(); }, 800);
+    }, 500);
 
   // ════════════════════════════════════════════════════════
   //  REEL LONG-PRESS CONTEXT MENU
