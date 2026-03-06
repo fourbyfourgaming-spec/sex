@@ -7950,32 +7950,10 @@ window.addEventListener('beforeinstallprompt', (e) => {
       updateNotifBadge(toEmail);
     }
 
-    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime + Web Push
+    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime
     if (typeof window.__pushCloudNotif === 'function') {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
-
-    // ── Direct OS device notification for the recipient on THIS device ──────
-    // Fires immediately when permission is granted — works even if the recipient
-    // is not the currently active tab user (e.g. same device, different session).
-    // Also acts as a safety net if showLiveNotifToast dedup already consumed the id.
-    try {
-      if (window.__punaNotif && window.__punaNotif.isGranted()) {
-        var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
-        var _osBody  = fullNotif.message || (
-          fullNotif.type === 'like'    ? 'liked your reel' :
-          fullNotif.type === 'comment' ? 'commented on your reel' :
-          fullNotif.type === 'follow'  ? 'started following you' : 'new activity'
-        );
-        var _osImg   = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
-        var _osTag   = 'puna-' + (fullNotif.type || 'notif') + '-' + (fullNotif.fromEmail || '');
-        // Only fire OS notification if this is for the recipient on this device
-        var _curUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
-        if (_curUser && _curUser.email === toEmail) {
-          window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
-        }
-      }
-    } catch (_osErr) {}
   }
   function updateNotifBadge(email) {
     if (!email) return;
@@ -9921,8 +9899,7 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
                     if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    var _msgMap2 = { follow: 'started following you', like: 'liked your reel', comment: 'commented on your reel', post: 'shared a new reel' };
-                    n.message = n.fromNickname + ' ' + (_msgMap2[n.type] || 'new activity');
+                    n.message = n.fromNickname + ' started following you';
                   }
                 } catch(e2) {}
               }
@@ -9936,22 +9913,6 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
               if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
-              // ── Fire OS device notification directly via Web Notification API ──
-              // This is the cross-device path: Supabase Realtime delivers to recipient's device.
-              // We fire the OS notification here regardless of showLiveNotifToast dedup.
-              try {
-                if (window.__punaNotif && window.__punaNotif.isGranted()) {
-                  var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
-                  var _rtBody  = n.message || (
-                    n.type === 'like'    ? 'liked your reel' :
-                    n.type === 'comment' ? 'commented on your reel' :
-                    n.type === 'follow'  ? 'started following you' : 'new activity'
-                  );
-                  var _rtImg  = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
-                  var _rtTag  = 'puna-rt-' + (n.type || 'notif') + '-' + (n.fromEmail || '');
-                  window.__punaNotif.show(_rtTitle, _rtBody, _rtImg, _rtTag);
-                }
-              } catch (_rtOsErr) {}
               console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
             }
             enrichAndShow(notif);
