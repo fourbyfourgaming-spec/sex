@@ -5962,10 +5962,15 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
   // ══════════════════════════════════════════════════════
   function renderFeed() {
     const allReelsFeed = getReels();
-    // Hide private reels that belong to other users
+    const allUsers = getUsers();
+    // Filter: hide private reels + hide reels from deleted accounts
     const reels = allReelsFeed.filter(function(r) {
-      if (!r.private) return true;
-      return (typeof currentUser !== 'undefined' && currentUser && r.email === currentUser.email);
+      if (!r.email) return false; // no owner — skip
+      // Hide reels from deleted users (not in users store)
+      if (!allUsers[r.email]) return false;
+      // Hide private reels from other users
+      if (r.private) return (typeof currentUser !== 'undefined' && currentUser && r.email === currentUser.email);
+      return true;
     });
     const feed    = document.getElementById('reel-feed');
     const empty   = document.getElementById('reel-empty');
@@ -9417,10 +9422,24 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
         pulled = true;
       }
 
-      // Reels
+      // Reels — filter out reels from deleted/unknown users
       const { data: reels } = await sb.from('punahub_reels').select('id, data').order('id', { ascending:true });
       if (reels && reels.length) {
-        window.__sbData.reels = reels.map(r => r.data);
+        // Only keep reels whose owner still exists in punahub_users
+        const { data: userRows } = await sb.from('punahub_users').select('email');
+        const activeEmails = new Set((userRows||[]).map(u => u.email));
+        const validReels   = reels.filter(r => r.data && r.data.email && activeEmails.has(r.data.email));
+        // Also clean up orphan reels from Supabase silently
+        const orphans = reels.filter(r => r.data && r.data.email && !activeEmails.has(r.data.email));
+        if (orphans.length && sb) {
+          orphans.forEach(function(r) {
+            sb.from('punahub_reels').delete().eq('id', r.id).then(function(){});
+            sb.from('punahub_likes').delete().eq('reel_id', r.id).then(function(){});
+            sb.from('punahub_comments').delete().eq('reel_id', r.id).then(function(){});
+          });
+          console.log('[punaHub] Cleaned', orphans.length, 'orphan reel(s) from deleted accounts');
+        }
+        window.__sbData.reels = validReels.map(r => r.data);
         // ✅ Write back to localStorage so live engine sees cloud reels
         try {
           const lean = window.__sbData.reels.map(r => {
