@@ -218,17 +218,13 @@
         opts.image = image;
       }
 
-      // ── Detect if running on a mobile device (Android/iOS) ──
+      // ── Detect mobile vs desktop ─────────────────────────
       var _isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-      // On Windows / Desktop: ALWAYS use direct Notification API.
-      // Blob-URL Service Workers cannot call showNotification() on desktop Chrome/Edge —
-      // the call is silently dropped, so notifications never appear in the taskbar.
-      // Direct new Notification() works perfectly on Windows Chrome, Edge, and Firefox.
-      //
-      // On Android: use SW path first (required for background notifications on mobile).
+      // WINDOWS / DESKTOP: always use direct new Notification() — blob-URL Service Workers
+      // cannot call showNotification() on desktop Chrome/Edge (silently dropped = nothing in taskbar).
+      // ANDROID / MOBILE: use SW path first (required for background push on mobile).
       if (!_isMobile) {
-        // ── WINDOWS / DESKTOP path ───────────────────────────
         try {
           new Notification(title, {
             body:     opts.body,
@@ -239,11 +235,9 @@
             renotify: true
           });
         } catch(e) {
-          // Last resort
           try { new Notification(title, { body: opts.body, icon: opts.icon }); } catch(e2) {}
         }
       } else {
-        // ── ANDROID / MOBILE path ─────────────────────────────
         try {
           var reg = _swReg || window.__swReg;
           if (!reg && navigator.serviceWorker) {
@@ -255,14 +249,7 @@
           if (reg && reg.showNotification) {
             await reg.showNotification(title, opts);
           } else {
-            new Notification(title, {
-              body:     opts.body,
-              icon:     opts.icon,
-              badge:    opts.badge,
-              tag:      opts.tag,
-              silent:   false,
-              renotify: true
-            });
+            new Notification(title, { body: opts.body, icon: opts.icon, badge: opts.badge, tag: opts.tag, silent: false, renotify: true });
           }
         } catch(e) {
           try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
@@ -537,9 +524,7 @@
         return;
       }
 
-      // Don't show again if already asked (unless forced)
-      if (!forceShow && localStorage.getItem('punahub_notif_asked') === '1') return;
-      localStorage.setItem('punahub_notif_asked', '1');
+      // Always show on startup until permission is granted — no snooze/asked guard
 
       // Remove any existing overlay
       var old = document.getElementById('puna-notif-overlay');
@@ -613,10 +598,7 @@
       overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
 
       document.getElementById('pnp-skip').onclick = function() {
-        // Remember they skipped — ask again next session (remove the "asked" flag in 3 days)
-        var snooze = Date.now() + 3 * 24 * 60 * 60 * 1000;
-        localStorage.setItem('punahub_notif_snooze', String(snooze));
-        localStorage.removeItem('punahub_notif_asked');
+        // Just dismiss — will ask again on next page load until permission is granted
         dismiss(overlay);
       };
 
@@ -642,17 +624,36 @@
       };
     };
 
-    // ── Auto-show on page load (if not asked yet / snooze expired) ──
+    // ── Show on every page load until permission is granted ──
     window.__punaCheckNotifPrompt = function() {
       if (!('Notification' in window)) return;
-      if (Notification.permission === 'granted') return;
-      // Check snooze
-      var snooze = parseInt(localStorage.getItem('punahub_notif_snooze') || '0', 10);
-      if (snooze && Date.now() < snooze) return; // still snoozed
-      if (snooze && Date.now() >= snooze) localStorage.removeItem('punahub_notif_snooze'); // expired
-      if (localStorage.getItem('punahub_notif_asked') === '1') return;
+      if (Notification.permission === 'granted') return; // already done — never ask again
+      // Always show — no snooze, no "already asked" guard
       window.__punaAskNotifPermission();
     };
+
+    // ── Fire immediately on page load ────────────────────────
+    // Shows the permission prompt as soon as the page is ready — even before login.
+    // Will keep appearing on every startup until the user clicks Allow.
+    (function() {
+      function _startupNotifPrompt() {
+        if (!('Notification' in window)) return;
+        if (Notification.permission === 'granted') {
+          // Already granted — just make sure SW push is subscribed when user logs in
+          return;
+        }
+        setTimeout(function() {
+          if (typeof window.__punaAskNotifPermission === 'function') {
+            window.__punaAskNotifPermission();
+          }
+        }, 900);
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', _startupNotifPrompt);
+      } else {
+        _startupNotifPrompt();
+      }
+    })();
 
   })();
   </script>
@@ -6074,14 +6075,12 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
       window.__startNotifRealtime(user.email);
     }
 
-    // 🔔 Ask for device notification permission (smart prompt — respects snooze)
+    // 🔔 Ask for device notification permission — show immediately after login
     setTimeout(function() {
-      if (typeof window.__punaCheckNotifPrompt === 'function') {
-        window.__punaCheckNotifPrompt();
-      } else if (typeof window.__punaAskNotifPermission === 'function') {
-        window.__punaAskNotifPermission();
+      if (typeof window.__punaAskNotifPermission === 'function') {
+        window.__punaAskNotifPermission(); // always show until granted
       }
-    }, 2000);
+    }, 500);
 
     // 🔔 If permission already granted (returning user), re-subscribe push silently
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
@@ -7976,8 +7975,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
 
-    // ── Direct OS device notification for the recipient on THIS device ──────
-    // Fires immediately when permission is granted — safety net for Windows taskbar.
+    // ── Direct OS device notification for recipient on THIS device ──
+    // Fires immediately when permission granted — ensures Windows taskbar notification appears.
     try {
       if (window.__punaNotif && window.__punaNotif.isGranted()) {
         var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
@@ -7988,8 +7987,8 @@ window.addEventListener('beforeinstallprompt', (e) => {
         );
         var _osImg  = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
         var _osTag  = 'puna-' + (fullNotif.type || 'notif') + '-' + (fullNotif.fromEmail || '');
-        var _curUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
-        if (_curUser && _curUser.email === toEmail) {
+        var _curDev = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+        if (_curDev && _curDev.email === toEmail) {
           window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
         }
       }
@@ -9954,7 +9953,7 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
               if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
-              // ── Fire OS device notification for cross-device Realtime delivery ──
+              // ── Fire OS device notification directly (cross-device Realtime delivery) ──
               try {
                 if (window.__punaNotif && window.__punaNotif.isGranted()) {
                   var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
