@@ -218,13 +218,13 @@
         opts.image = image;
       }
 
-      // ── Detect mobile vs desktop ─────────────────────────
+      // BUG FIX: Blob-URL Service Workers cannot call showNotification() on Windows/Desktop
+      // Chrome/Edge silently drops the call — notifications never appear in the taskbar.
+      // Fix: on desktop always use direct new Notification() which works perfectly.
+      // On Android/mobile keep the SW path (required for background push on mobile).
       var _isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-      // WINDOWS / DESKTOP: always use direct new Notification() — blob-URL Service Workers
-      // cannot call showNotification() on desktop Chrome/Edge (silently dropped = nothing in taskbar).
-      // ANDROID / MOBILE: use SW path first (required for background push on mobile).
       if (!_isMobile) {
+        // ── WINDOWS / DESKTOP: direct Notification API ───────
         try {
           new Notification(title, {
             body:     opts.body,
@@ -238,6 +238,7 @@
           try { new Notification(title, { body: opts.body, icon: opts.icon }); } catch(e2) {}
         }
       } else {
+        // ── ANDROID / MOBILE: SW path first, fallback to direct ──
         try {
           var reg = _swReg || window.__swReg;
           if (!reg && navigator.serviceWorker) {
@@ -249,7 +250,10 @@
           if (reg && reg.showNotification) {
             await reg.showNotification(title, opts);
           } else {
-            new Notification(title, { body: opts.body, icon: opts.icon, badge: opts.badge, tag: opts.tag, silent: false, renotify: true });
+            new Notification(title, {
+              body: opts.body, icon: opts.icon, badge: opts.badge,
+              tag: opts.tag, silent: false, renotify: true
+            });
           }
         } catch(e) {
           try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
@@ -524,7 +528,8 @@
         return;
       }
 
-      // Always show on startup until permission is granted — no snooze/asked guard
+      // BUG FIX: Old code blocked re-showing with punahub_notif_asked / snooze flags.
+      // Fix: always show until granted — no snooze, no "already asked" block.
 
       // Remove any existing overlay
       var old = document.getElementById('puna-notif-overlay');
@@ -598,7 +603,8 @@
       overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
 
       document.getElementById('pnp-skip').onclick = function() {
-        // Just dismiss — will ask again on next page load until permission is granted
+        // BUG FIX: Old code snoozed for 3 days — user would never see the prompt.
+        // Fix: just dismiss. Will show again on next page load until permission granted.
         dismiss(overlay);
       };
 
@@ -624,24 +630,20 @@
       };
     };
 
-    // ── Show on every page load until permission is granted ──
+    // BUG FIX: Old code checked snooze + punahub_notif_asked and silently returned.
+    // Fix: always show the prompt on every startup until permission is granted.
     window.__punaCheckNotifPrompt = function() {
       if (!('Notification' in window)) return;
-      if (Notification.permission === 'granted') return; // already done — never ask again
-      // Always show — no snooze, no "already asked" guard
+      if (Notification.permission === 'granted') return; // granted — never ask again
       window.__punaAskNotifPermission();
     };
 
-    // ── Fire immediately on page load ────────────────────────
-    // Shows the permission prompt as soon as the page is ready — even before login.
-    // Will keep appearing on every startup until the user clicks Allow.
+    // ── Show immediately on every page load (before login) ──
+    // Fires 0.9s after page ready so UI renders first. Keeps showing until Allow is clicked.
     (function() {
       function _startupNotifPrompt() {
         if (!('Notification' in window)) return;
-        if (Notification.permission === 'granted') {
-          // Already granted — just make sure SW push is subscribed when user logs in
-          return;
-        }
+        if (Notification.permission === 'granted') return;
         setTimeout(function() {
           if (typeof window.__punaAskNotifPermission === 'function') {
             window.__punaAskNotifPermission();
@@ -6075,10 +6077,10 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
       window.__startNotifRealtime(user.email);
     }
 
-    // 🔔 Ask for device notification permission — show immediately after login
+    // 🔔 Ask for device notification permission — always show until granted
     setTimeout(function() {
       if (typeof window.__punaAskNotifPermission === 'function') {
-        window.__punaAskNotifPermission(); // always show until granted
+        window.__punaAskNotifPermission();
       }
     }, 500);
 
@@ -7178,7 +7180,9 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
         posterURL = await new Promise(res => {
           const tempURL = URL.createObjectURL(videoFile);
           const vid = document.createElement('video');
-          vid.src = tempURL; vid.muted = true; vid.currentTime = 0.5;
+          vid.src = tempURL; vid.muted = true; vid.playsInline = true;
+          vid.load(); // BUG FIX: missing load() call — without it onloadeddata never fires on Chrome/Firefox
+          vid.currentTime = 0.5;
           vid.onloadeddata = () => {
             const cvs = document.createElement('canvas');
             cvs.width = 180; cvs.height = 320;
@@ -7332,6 +7336,23 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
     } catch(e) {}
   }
   window.refreshProfileStats = refreshProfileStats;
+
+  // BUG FIX: renderFeed, renderComments, showToast, formatNum, openComments,
+  // toggleLike, postComment, toggleFollow, shareReel were NOT exposed on window.
+  // safeCall('renderFeed') silently failed. HTML onclick handlers in dynamically
+  // rendered cards also failed in strict cross-script contexts.
+  window.renderFeed          = renderFeed;
+  window.renderComments      = renderComments;
+  window.showToast           = showToast;
+  window.formatNum           = formatNum;
+  window.openComments        = openComments;
+  window.toggleLike          = toggleLike;
+  window.postComment         = postComment;
+  window.toggleFollow        = toggleFollow;
+  window.shareReel           = shareReel;
+  window.renderProfile       = renderProfile;
+  window.switchReelTab       = window.switchReelTab || switchReelTab;
+  window.setupReelObserver   = setupReelObserver;
 
   function goBackToMyProfile() {
     renderProfile(currentUser);
@@ -7975,24 +7996,20 @@ window.addEventListener('beforeinstallprompt', (e) => {
       window.__pushCloudNotif(toEmail, fullNotif);
     }
 
-    // ── Direct OS device notification for recipient on THIS device ──
-    // Fires immediately when permission granted — ensures Windows taskbar notification appears.
+    // BUG FIX: OS device notification was only fired inside showLiveNotifToast which
+    // has a dedup guard. For the recipient on THIS device, fire it directly here too.
     try {
       if (window.__punaNotif && window.__punaNotif.isGranted()) {
         var _osTitle = 'punaHub — ' + (fullNotif.fromNickname || 'Someone');
-        var _osBody  = fullNotif.message || (
-          fullNotif.type === 'like'    ? 'liked your reel' :
-          fullNotif.type === 'comment' ? 'commented on your reel' :
-          fullNotif.type === 'follow'  ? 'started following you' : 'new activity'
-        );
-        var _osImg  = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
-        var _osTag  = 'puna-' + (fullNotif.type || 'notif') + '-' + (fullNotif.fromEmail || '');
-        var _curDev = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
-        if (_curDev && _curDev.email === toEmail) {
+        var _osBody  = fullNotif.message || (fullNotif.type==='like' ? 'liked your reel' : fullNotif.type==='comment' ? 'commented on your reel' : fullNotif.type==='follow' ? 'started following you' : 'new activity');
+        var _osImg   = (fullNotif.fromAvatar && !fullNotif.fromAvatar.startsWith('data:')) ? fullNotif.fromAvatar : '';
+        var _osTag   = 'puna-' + (fullNotif.type||'notif') + '-' + (fullNotif.fromEmail||'');
+        var _devUser = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+        if (_devUser && _devUser.email === toEmail) {
           window.__punaNotif.show(_osTitle, _osBody, _osImg, _osTag);
         }
       }
-    } catch (_osErr) {}
+    } catch(_osErr) {}
   }
   function updateNotifBadge(email) {
     if (!email) return;
@@ -9938,8 +9955,9 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
                     if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
                     if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
                     if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
-                    var _msgMapRt = { follow: 'started following you', like: 'liked your reel', comment: 'commented on your reel', post: 'shared a new reel' };
-                    n.message = n.fromNickname + ' ' + (_msgMapRt[n.type] || 'new activity');
+                    // BUG FIX: was always setting "started following you" for all types
+                    var _msgTypes = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+                    n.message = n.fromNickname + ' ' + (_msgTypes[n.type] || 'new activity');
                   }
                 } catch(e2) {}
               }
@@ -9953,20 +9971,17 @@ window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
               existing.unshift(n);
               localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
               if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
-              // ── Fire OS device notification directly (cross-device Realtime delivery) ──
+              // BUG FIX: OS device notification was not firing on cross-device Realtime delivery.
+              // showLiveNotifToast dedup guard can block it. Fire OS notification directly here.
               try {
                 if (window.__punaNotif && window.__punaNotif.isGranted()) {
                   var _rtTitle = 'punaHub — ' + (n.fromNickname || 'Someone');
-                  var _rtBody  = n.message || (
-                    n.type === 'like'    ? 'liked your reel' :
-                    n.type === 'comment' ? 'commented on your reel' :
-                    n.type === 'follow'  ? 'started following you' : 'new activity'
-                  );
-                  var _rtImg  = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
-                  var _rtTag  = 'puna-rt-' + (n.type || 'notif') + '-' + (n.fromEmail || '');
+                  var _rtBody  = n.message || (n.type==='like' ? 'liked your reel' : n.type==='comment' ? 'commented on your reel' : n.type==='follow' ? 'started following you' : 'new activity');
+                  var _rtImg   = (n.fromAvatar && !n.fromAvatar.startsWith('data:')) ? n.fromAvatar : '';
+                  var _rtTag   = 'puna-rt-' + (n.type||'notif') + '-' + (n.fromEmail||'');
                   window.__punaNotif.show(_rtTitle, _rtBody, _rtImg, _rtTag);
                 }
-              } catch (_rtErr) {}
+              } catch(_rtErr) {}
               console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
             }
             enrichAndShow(notif);
