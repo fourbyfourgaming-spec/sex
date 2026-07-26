@@ -4028,9 +4028,9 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
         <span class="avatar-placeholder" id="avatar-placeholder">👤</span>
         <img id="avatar-result" src="" alt="avatar" class="hidden" />
       </div>
-      <button class="avatar-edit-btn" id="avatar-edit-btn" onclick="document.getElementById('avatar-file').click()">
+      <label class="avatar-edit-btn" id="avatar-edit-btn" for="avatar-file">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15.232 5.232l3.536 3.536M9 11l6-6 3 3-6 6H9v-3z"/><path d="M3 20h18"/></svg>
-      </button>
+      </label>
     </div>
 
     <input type="file" id="avatar-file" accept="image/*" class="file-input-hidden" onchange="onFileSelect(event)" />
@@ -4248,12 +4248,12 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
         <button class="xml-close-btn" onclick="closeUpload()">✕</button>
       </div>
 
-      <div class="upload-drop" id="upload-drop" onclick="document.getElementById('reel-file').click()">
+      <label class="upload-drop" id="upload-drop" for="reel-file">
         <div class="upload-drop-icon">🎬</div>
         <p>Tap to choose a video</p>
         <span>MP4, MOV, WebM</span>
         <video id="upload-preview-video" class="hidden"></video>
-      </div>
+      </label>
 
       <!-- Video seek slider — shown after video is selected -->
       <div id="upload-seek-wrap" class="upload-seek-wrap hidden">
@@ -4567,7 +4567,7 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
       <!-- Avatar change section -->
       <div class="ep-avatar-section">
-        <div class="ep-avatar-wrap" onclick="document.getElementById('ep-file').click()">
+        <label class="ep-avatar-wrap" for="ep-file">
           <div class="ep-avatar" id="ep-avatar-preview">
             <span id="ep-avatar-ph">👤</span>
             <img id="ep-avatar-img" src="" alt="" class="hidden"/>
@@ -4575,8 +4575,8 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
           <div class="ep-avatar-overlay">
             <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
           </div>
-        </div>
-        <button class="ep-change-photo-btn" onclick="document.getElementById('ep-file').click()">Change Profile Photo</button>
+        </label>
+        <label class="ep-change-photo-btn" for="ep-file">Change Profile Photo</label>
         <input type="file" id="ep-file" accept="image/*" class="file-input-hidden" onchange="onEpFileSelect(event)"/>
       </div>
 
