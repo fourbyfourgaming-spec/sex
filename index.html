@@ -5271,8 +5271,13 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
   // 6. Block cut event
   document.addEventListener('cut', e => { e.preventDefault(); });
 
-  // 7. DevTools open detector (size-based)
+  // 7. DevTools open detector (size-based) — DESKTOP ONLY.
+  // On Android/mobile, outerWidth/outerHeight vs innerWidth/innerHeight
+  // naturally diverge (on-screen keyboard, browser chrome show/hide,
+  // split-screen multitasking, PWA vs tab mode), which falsely triggered
+  // this and blanked the whole app on real devices. Restrict to desktop.
   (function devToolsGuard() {
+    if (window.__device && (window.__device.isMobile || window.__device.isTablet)) return;
     const threshold = 160;
     setInterval(() => {
       if (
