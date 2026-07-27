@@ -13,6 +13,63 @@
   <meta name="mobile-web-app-capable" content="yes">
   <!-- Hint to Chrome on Android to request high refresh rate for this page -->
   <meta name="screen-orientation" content="any">
+  <script>
+  // ════════════════════════════════════════════════════════
+  //  ANDROID PWA MANIFEST — enables "Add to Home Screen" /
+  //  install as a standalone app, which Android requires for
+  //  fully reliable background push notifications.
+  //  Built + attached at runtime via Blob URL — no separate
+  //  manifest.json file needed.
+  // ════════════════════════════════════════════════════════
+  (function() {
+    var ICON192 = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='40' fill='%230d0f14'/%3E%3Ctext x='96' y='128' text-anchor='middle' font-size='104' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+    var ICON512 = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='108' fill='%230d0f14'/%3E%3Ctext x='256' y='340' text-anchor='middle' font-size='276' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+    var ICON512_SAFE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230d0f14'/%3E%3Ctext x='256' y='300' text-anchor='middle' font-size='190' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+
+    var manifest = {
+      name: "punaHub",
+      short_name: "punaHub",
+      description: "punaHub — share your moments",
+      start_url: "./",
+      scope: "./",
+      display: "standalone",
+      orientation: "any",
+      background_color: "#0d0f14",
+      theme_color: "#0d0f14",
+      icons: [
+        { src: ICON192,     sizes: "192x192", type: "image/svg+xml", purpose: "any" },
+        { src: ICON512,     sizes: "512x512", type: "image/svg+xml", purpose: "any" },
+        { src: ICON512_SAFE,sizes: "512x512", type: "image/svg+xml", purpose: "maskable" }
+      ]
+    };
+
+    try {
+      var blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+      var url  = URL.createObjectURL(blob);
+      var link = document.createElement('link');
+      link.rel  = 'manifest';
+      link.href = url;
+      document.head.appendChild(link);
+    } catch(e) { /* older browsers without Blob/URL support — silently skip */ }
+
+    // ── Capture Android's native install prompt so the app can ──
+    // trigger it from a real button instead of relying on the
+    // browser's own (often-hidden) install menu entry.
+    window.__punaInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      window.__punaInstallPrompt = e;
+    });
+    window.__punaInstallApp = async function() {
+      var evt = window.__punaInstallPrompt;
+      if (!evt) return 'unavailable';
+      evt.prompt();
+      var choice = await evt.userChoice;
+      window.__punaInstallPrompt = null;
+      return choice.outcome; // 'accepted' | 'dismissed'
+    };
+  })();
+  </script>
   <style>
     /* Always disable scroll-behavior on the feed — snap handles it natively at display Hz */
     .reel-feed { scroll-behavior: auto !important; }
@@ -4230,6 +4287,12 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
           </button>
         </div>
       </div>
+      <!-- Suggested for you (nearby-first, falls back to general suggestions) -->
+      <div id="profile-suggest-section" style="display:none;padding:6px 16px 16px;border-top:1px solid #1a1d26;margin-top:4px">
+        <div style="font-family:'DM Sans',sans-serif;font-size:0.68rem;font-weight:700;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;margin:12px 0 10px">Suggested for you</div>
+        <div id="profile-suggest-track" style="display:flex;gap:12px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px"></div>
+      </div>
+
       <div class="profile-reel-grid" id="profile-reel-grid">
         <!-- Reel thumbnails injected by JS -->
       </div>
@@ -7269,6 +7332,16 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
     if (editBtn)     editBtn.style.display     = isSelf ? '' : 'none';
     if (settingsBtn) settingsBtn.style.display = isSelf ? '' : 'none';
 
+    // Suggested-for-you strip — own profile only
+    var suggestSection = document.getElementById('profile-suggest-section');
+    if (suggestSection) {
+      if (isSelf && typeof window.__renderProfileSuggestions === 'function') {
+        window.__renderProfileSuggestions();
+      } else {
+        suggestSection.style.display = 'none';
+      }
+    }
+
     // Big avatar
     setAvatarImg(
       document.getElementById('profile-avatar-img-big'),
@@ -9419,10 +9492,22 @@ window.addEventListener('beforeinstallprompt', (e) => {
             '<div style="font-size:0.83rem;font-weight:600;color:#e8eaf0;font-family:DM Sans,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + safeNick + '</div>' +
             '<div style="font-size:0.73rem;color:#6b7280;font-family:DM Sans,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + safeEmail + '</div>' +
           '</div>' +
-          '<button onclick="(function(e){if(typeof toggleFollow==='function'){toggleFollow(e);var btn=this;btn.textContent='Following';btn.style.color='#6b7280';btn.style.border='1px solid #272c38';btn.style.background='transparent';setTimeout(function(){refreshSuggestions&&refreshSuggestions()},1000)}}).call(this,'' + safeEmail.replace(/'/g,"\'") + '')" style="background:rgba(201,245,66,0.1);color:#c9f542;border:1px solid rgba(201,245,66,0.2);border-radius:8px;padding:5px 12px;font-family:DM Sans,sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;flex-shrink:0;transition:all 0.2s;-webkit-tap-highlight-color:transparent">Follow</button>' +
+          '<button data-suggest-email="' + safeEmail.replace(/'/g, '&#39;') + '" onclick="window.__webSuggestFollow(this)" style="background:rgba(201,245,66,0.1);color:#c9f542;border:1px solid rgba(201,245,66,0.2);border-radius:8px;padding:5px 12px;font-family:DM Sans,sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;flex-shrink:0;transition:all 0.2s;-webkit-tap-highlight-color:transparent">Follow</button>' +
         '</div>';
       }).join('');
     }
+
+    // Safe click handler for the Follow button (avoids nested-quote onclick issues)
+    window.__webSuggestFollow = function(btn) {
+      var email = btn.getAttribute('data-suggest-email');
+      if (!email || typeof toggleFollow !== 'function') return;
+      toggleFollow(email);
+      btn.textContent = 'Following';
+      btn.style.color = '#6b7280';
+      btn.style.border = '1px solid #272c38';
+      btn.style.background = 'transparent';
+      setTimeout(function() { if (typeof refreshSuggestions === 'function') refreshSuggestions(); }, 1000);
+    };
 
     // Refresh suggestions when user logs in
     var _sugg_intvl = setInterval(function() {
@@ -9500,6 +9585,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     pointer-events: auto;
   }
   #nearby-carousel-track::-webkit-scrollbar { display: none; }
+  #profile-suggest-track::-webkit-scrollbar { display: none; }
   .nearby-card {
     position: relative;
     flex: 0 0 auto;
@@ -9682,18 +9768,19 @@ window.addEventListener('beforeinstallprompt', (e) => {
 
   function cardHtml(email, u, km) {
     var name = escHtml(u.nickname || email.split('@')[0]);
-    var dist = km < 1 ? Math.round(km * 1000) + 'm away' : km.toFixed(1) + 'km away';
+    var badge = (typeof km === 'number')
+      ? '📍 ' + (km < 1 ? Math.round(km * 1000) + 'm away' : km.toFixed(1) + 'km away')
+      : '✨ Suggested';
     var photo = u.avatar
       ? '<img src="' + u.avatar + '" alt="">'
       : '<div class="nearby-card-fallback">' + (u.nickname ? u.nickname[0].toUpperCase() : '👤') + '</div>';
-    var isFollowing = typeof isFollowing === 'function'; // placeholder, real check below
     return (
       '<div class="nearby-card" data-email="' + escHtml(email) + '">' +
         '<div class="nearby-card-photo" onclick="window.__nearbyGoProfile(\'' + email.replace(/'/g,"\\'") + '\')">' +
           photo +
           '<div class="nearby-card-gradient"></div>' +
           '<button class="nearby-card-close" onclick="event.stopPropagation();window.__nearbyDismiss(\'' + email.replace(/'/g,"\\'") + '\')">✕</button>' +
-          '<div class="nearby-card-badge">📍 ' + dist + '</div>' +
+          '<div class="nearby-card-badge">' + badge + '</div>' +
         '</div>' +
         '<div class="nearby-card-name">' + name + '</div>' +
         '<button class="nearby-card-follow" onclick="window.__nearbyFollow(\'' + email.replace(/'/g,"\\'") + '\', this)">Follow</button>' +
@@ -9704,19 +9791,22 @@ window.addEventListener('beforeinstallprompt', (e) => {
   window.__nearbyDismiss = function(email) {
     _dismissed[email] = true;
     persistDismissed();
-    var card = document.querySelector('.nearby-card[data-email="' + CSS.escape(email) + '"]');
-    if (card) {
+    var cards = document.querySelectorAll('.nearby-card[data-email="' + CSS.escape(email) + '"]');
+    if (!cards.length) return;
+    cards.forEach(function(card) {
       card.style.transition = 'opacity 0.2s, transform 0.2s';
       card.style.opacity = '0';
       card.style.transform = 'scale(0.9)';
-      setTimeout(function() {
-        card.remove();
-        var track = document.getElementById('nearby-carousel-track');
-        if (track && !track.children.length) {
-          document.getElementById('nearby-carousel-wrap').classList.remove('show');
-        }
-      }, 200);
-    }
+    });
+    setTimeout(function() {
+      cards.forEach(function(card) { card.remove(); });
+      var homeTrack = document.getElementById('nearby-carousel-track');
+      var homeWrap  = document.getElementById('nearby-carousel-wrap');
+      if (homeTrack && homeWrap && !homeTrack.children.length) homeWrap.classList.remove('show');
+      var profTrack   = document.getElementById('profile-suggest-track');
+      var profSection = document.getElementById('profile-suggest-section');
+      if (profTrack && profSection && !profTrack.children.length) profSection.style.display = 'none';
+    }, 200);
   };
 
   window.__nearbyFollow = function(email, btn) {
@@ -9788,7 +9878,68 @@ window.addEventListener('beforeinstallprompt', (e) => {
 
     candidates.sort(function(a, b) { return a.km - b.km; });
     renderCarousel(candidates.slice(0, MAX_CARDS));
+    renderProfileSuggestions();
   }
+
+  // ── Gather candidates for the Profile tab strip — nearby   ──
+  // users first (if location known), falling back to general
+  // "people you don't follow yet" so the section is never empty.
+  function gatherCandidates(maxCount) {
+    var cu = window.__punaActiveUser;
+    if (!cu || !window.__sbData || !window.__sbData.users) return [];
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var myFollowing = ((fd[cu.email] || {}).following || []);
+    var now = Date.now();
+    var geo = window.__punaMyGeo;
+
+    var nearby = [], others = [];
+    Object.keys(window.__sbData.users).forEach(function(email) {
+      if (email === cu.email) return;
+      if (myFollowing.indexOf(email) !== -1) return;
+      if (_dismissed[email]) return;
+      var u = window.__sbData.users[email];
+      if (!u) return;
+
+      if (geo && typeof u.lat === 'number' && typeof u.lng === 'number' &&
+          u.geoTs && (now - u.geoTs) <= STALE_LOCATION_MS) {
+        var km = distKm(geo.lat, geo.lng, u.lat, u.lng);
+        if (km <= NEARBY_RADIUS_KM) { nearby.push({ email: email, u: u, km: km }); return; }
+      }
+      others.push({ email: email, u: u, km: null });
+    });
+
+    nearby.sort(function(a, b) { return a.km - b.km; });
+    return nearby.concat(others).slice(0, maxCount || MAX_CARDS);
+  }
+
+  // ── Render the "Suggested for you" strip on the Profile tab ──
+  function renderProfileSuggestions() {
+    var section = document.getElementById('profile-suggest-section');
+    var track   = document.getElementById('profile-suggest-track');
+    if (!section || !track) return;
+
+    var list = gatherCandidates(8);
+    if (!list.length) { section.style.display = 'none'; return; }
+
+    track.innerHTML = list.map(function(item) {
+      return cardHtml(item.email, item.u, item.km);
+    }).join('');
+
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var cu = window.__punaActiveUser;
+    var myFollowing = (cu && (fd[cu.email] || {}).following) || [];
+    list.forEach(function(item) {
+      if (myFollowing.indexOf(item.email) !== -1) {
+        track.querySelectorAll('.nearby-card[data-email="' + CSS.escape(item.email) + '"] .nearby-card-follow')
+          .forEach(function(b) { b.textContent = 'Following'; b.classList.add('following'); });
+      }
+    });
+
+    section.style.display = 'block';
+  }
+  window.__renderProfileSuggestions = renderProfileSuggestions;
 
   // ── Geolocation plumbing ─────────────────────────────────
   function onPosition(pos) {
@@ -9814,6 +9965,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
   setInterval(function() {
     refreshUsersSnapshot().then(function() {
       if (window.__punaMyGeo) checkNearby(window.__punaMyGeo.lat, window.__punaMyGeo.lng);
+      else renderProfileSuggestions();
     });
   }, POLL_OTHERS_MS);
 
@@ -9822,6 +9974,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     if (window.__punaActiveUser) {
       clearInterval(_geoInitIntvl);
       startGeoWatch();
+      refreshUsersSnapshot().then(renderProfileSuggestions);
     }
   }, 800);
 
@@ -11866,7 +12019,7 @@ insert into storage.buckets (id,name,public) values ('punahub','punahub',true) o
           '<div style="font-size:0.72rem;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escSafe(title) + '</div>' +
         '</div>' +
         '<span style="font-size:1.1rem;flex-shrink:0">🎬</span>' +
-        '<button onclick="event.stopPropagation();var t=document.getElementById('follow-post-toast');if(t)t.remove()" style="background:none;border:none;color:#6b7280;font-size:1rem;cursor:pointer;padding:4px;flex-shrink:0;pointer-events:auto">✕</button>' +
+        '<button onclick="event.stopPropagation();var t=document.getElementById(\'follow-post-toast\');if(t)t.remove()" style="background:none;border:none;color:#6b7280;font-size:1rem;cursor:pointer;padding:4px;flex-shrink:0;pointer-events:auto">✕</button>' +
       '</div>';
 
     el.style.cssText =
