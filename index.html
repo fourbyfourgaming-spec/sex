@@ -9477,6 +9477,359 @@ window.addEventListener('beforeinstallprompt', (e) => {
 
 })();
 </script>
+
+<style>
+  /* ── Nearby friends carousel (Instagram-style suggestion tray) ── */
+  #nearby-carousel-wrap {
+    position: absolute;
+    left: 0; right: 0;
+    top: 68px;
+    z-index: 18;
+    display: none;
+    pointer-events: none;
+  }
+  #nearby-carousel-wrap.show { display: block; }
+  #nearby-carousel-track {
+    display: flex;
+    gap: 12px;
+    padding: 10px 16px 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    pointer-events: auto;
+  }
+  #nearby-carousel-track::-webkit-scrollbar { display: none; }
+  .nearby-card {
+    position: relative;
+    flex: 0 0 auto;
+    width: 118px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    animation: nearbyCardIn 0.4s cubic-bezier(0.16,1,0.3,1) both;
+  }
+  @keyframes nearbyCardIn {
+    from { opacity: 0; transform: translateY(-10px) scale(0.94); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .nearby-card-photo {
+    position: relative;
+    width: 118px;
+    height: 150px;
+    border-radius: 16px;
+    overflow: hidden;
+    background: linear-gradient(135deg,#272c38,#1a1f30);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+  }
+  .nearby-card-photo img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .nearby-card-photo .nearby-card-fallback {
+    width: 100%; height: 100%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 2.4rem; font-weight: 700; color: #6b7280;
+    font-family: 'DM Sans', sans-serif;
+  }
+  .nearby-card-close {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: rgba(13,15,20,0.65);
+    backdrop-filter: blur(6px);
+    border: none;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font-size: 0.68rem;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    z-index: 2;
+  }
+  .nearby-card-badge {
+    position: absolute;
+    left: 6px; bottom: 6px; right: 6px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .nearby-card-gradient {
+    position: absolute;
+    left:0; right:0; bottom:0;
+    height: 46%;
+    background: linear-gradient(to top, rgba(0,0,0,0.75), transparent);
+    pointer-events: none;
+  }
+  .nearby-card-name {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: #e8eaf0;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 2px;
+  }
+  .nearby-card-follow {
+    width: 100%;
+    background: #3897f0;
+    color: #fff;
+    border: none;
+    border-radius: 20px;
+    padding: 7px 0;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .nearby-card-follow:active { opacity: 0.75; }
+  .nearby-card-follow.following {
+    background: rgba(255,255,255,0.1);
+    color: #9ca3af;
+    border: 1px solid rgba(255,255,255,0.14);
+  }
+</style>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  📍 NEARBY FRIENDS — hidden live-location suggestion tray
+//  Silently watches device location in the background. Users
+//  physically close to you are surfaced as an Instagram-style
+//  card carousel at the top of the home feed — photo card with
+//  a dismiss (✕) button, name, and a Follow button underneath.
+//  No settings toggle; fails silently without location access.
+// ══════════════════════════════════════════════════════════
+(function() {
+  var NEARBY_RADIUS_KM  = 5;                // "close to you" threshold
+  var MIN_UPLOAD_GAP_MS = 90 * 1000;        // throttle writing my own location
+  var POLL_OTHERS_MS    = 25 * 1000;        // how often to re-check other users
+  var STALE_LOCATION_MS = 30 * 60 * 1000;   // ignore locations older than 30 min
+  var MAX_CARDS          = 8;               // cap carousel length
+
+  var _lastUploadAt = 0;
+  var _watchId = null;
+  var _dismissed = {};   // email -> true (hidden for this session)
+
+  try { _dismissed = JSON.parse(sessionStorage.getItem('punahub_nearby_dismissed') || '{}'); } catch(e) {}
+  function persistDismissed() {
+    try { sessionStorage.setItem('punahub_nearby_dismissed', JSON.stringify(_dismissed)); } catch(e) {}
+  }
+
+  function toRad(d) { return d * Math.PI / 180; }
+  function distKm(lat1, lon1, lat2, lon2) {
+    var R = 6371;
+    var dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+    var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // ── Silently persist my current location on my own user row ──
+  async function uploadMyLocation(lat, lng) {
+    var cu = window.__punaActiveUser;
+    if (!cu || !cu.email || !window.sb) return;
+    var now = Date.now();
+    if (now - _lastUploadAt < MIN_UPLOAD_GAP_MS) return;
+    _lastUploadAt = now;
+    try {
+      var existing = (window.__sbData && window.__sbData.users && window.__sbData.users[cu.email]) || {};
+      var merged = Object.assign({}, existing, { lat: lat, lng: lng, geoTs: now });
+      if (window.__sbData && window.__sbData.users) window.__sbData.users[cu.email] = merged;
+      await window.sb.from('punahub_users').upsert({ email: cu.email, data: merged }, { onConflict: 'email' });
+    } catch (e) { /* fail silently — hidden feature, never surface errors */ }
+  }
+
+  // ── Pull latest rows so we can see other users' locations ──
+  async function refreshUsersSnapshot() {
+    if (!window.sb) return;
+    try {
+      var res = await window.sb.from('punahub_users').select('email, data');
+      if (res && res.data && res.data.length) {
+        if (!window.__sbData) window.__sbData = {};
+        if (!window.__sbData.users) window.__sbData.users = {};
+        res.data.forEach(function(r) { window.__sbData.users[r.email] = r.data; });
+      }
+    } catch (e) {}
+  }
+
+  // ── Build the carousel container (created once, reused) ──
+  function ensureWrap() {
+    var wrap = document.getElementById('nearby-carousel-wrap');
+    if (wrap) return wrap;
+    wrap = document.createElement('div');
+    wrap.id = 'nearby-carousel-wrap';
+    wrap.innerHTML = '<div id="nearby-carousel-track"></div>';
+    var screen = document.getElementById('reel-screen');
+    (screen || document.body).appendChild(wrap);
+    return wrap;
+  }
+
+  function escHtml(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function cardHtml(email, u, km) {
+    var name = escHtml(u.nickname || email.split('@')[0]);
+    var dist = km < 1 ? Math.round(km * 1000) + 'm away' : km.toFixed(1) + 'km away';
+    var photo = u.avatar
+      ? '<img src="' + u.avatar + '" alt="">'
+      : '<div class="nearby-card-fallback">' + (u.nickname ? u.nickname[0].toUpperCase() : '👤') + '</div>';
+    var isFollowing = typeof isFollowing === 'function'; // placeholder, real check below
+    return (
+      '<div class="nearby-card" data-email="' + escHtml(email) + '">' +
+        '<div class="nearby-card-photo" onclick="window.__nearbyGoProfile(\'' + email.replace(/'/g,"\\'") + '\')">' +
+          photo +
+          '<div class="nearby-card-gradient"></div>' +
+          '<button class="nearby-card-close" onclick="event.stopPropagation();window.__nearbyDismiss(\'' + email.replace(/'/g,"\\'") + '\')">✕</button>' +
+          '<div class="nearby-card-badge">📍 ' + dist + '</div>' +
+        '</div>' +
+        '<div class="nearby-card-name">' + name + '</div>' +
+        '<button class="nearby-card-follow" onclick="window.__nearbyFollow(\'' + email.replace(/'/g,"\\'") + '\', this)">Follow</button>' +
+      '</div>'
+    );
+  }
+
+  window.__nearbyDismiss = function(email) {
+    _dismissed[email] = true;
+    persistDismissed();
+    var card = document.querySelector('.nearby-card[data-email="' + CSS.escape(email) + '"]');
+    if (card) {
+      card.style.transition = 'opacity 0.2s, transform 0.2s';
+      card.style.opacity = '0';
+      card.style.transform = 'scale(0.9)';
+      setTimeout(function() {
+        card.remove();
+        var track = document.getElementById('nearby-carousel-track');
+        if (track && !track.children.length) {
+          document.getElementById('nearby-carousel-wrap').classList.remove('show');
+        }
+      }, 200);
+    }
+  };
+
+  window.__nearbyFollow = function(email, btn) {
+    if (typeof toggleFollow === 'function') toggleFollow(email);
+    if (btn) {
+      btn.textContent = 'Following';
+      btn.classList.add('following');
+    }
+    setTimeout(function() { window.__nearbyDismiss(email); }, 900);
+  };
+
+  window.__nearbyGoProfile = function(email) {
+    if (typeof hubGoProfile === 'function') hubGoProfile(email);
+  };
+
+  // ── Render the carousel from the current best candidates ──
+  function renderCarousel(list) {
+    var wrap = ensureWrap();
+    var track = document.getElementById('nearby-carousel-track');
+    if (!track) return;
+
+    if (!list.length) {
+      wrap.classList.remove('show');
+      return;
+    }
+
+    track.innerHTML = list.map(function(item) {
+      return cardHtml(item.email, item.u, item.km);
+    }).join('');
+
+    // Reflect current follow state on buttons
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var cu = window.__punaActiveUser;
+    var myFollowing = (cu && (fd[cu.email] || {}).following) || [];
+    list.forEach(function(item) {
+      if (myFollowing.indexOf(item.email) !== -1) {
+        var card = document.querySelector('.nearby-card[data-email="' + CSS.escape(item.email) + '"] .nearby-card-follow');
+        if (card) { card.textContent = 'Following'; card.classList.add('following'); }
+      }
+    });
+
+    wrap.classList.add('show');
+  }
+
+  // ── Find eligible nearby users and render them ──────────
+  function checkNearby(myLat, myLng) {
+    var cu = window.__punaActiveUser;
+    if (!cu || !window.__sbData || !window.__sbData.users) return;
+
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var myFollowing = ((fd[cu.email] || {}).following || []);
+
+    var now = Date.now();
+    var candidates = [];
+
+    Object.keys(window.__sbData.users).forEach(function(email) {
+      if (email === cu.email) return;
+      if (myFollowing.indexOf(email) !== -1) return;
+      if (_dismissed[email]) return;
+      var u = window.__sbData.users[email];
+      if (!u || typeof u.lat !== 'number' || typeof u.lng !== 'number') return;
+      if (!u.geoTs || (now - u.geoTs) > STALE_LOCATION_MS) return;
+
+      var km = distKm(myLat, myLng, u.lat, u.lng);
+      if (km <= NEARBY_RADIUS_KM) candidates.push({ email: email, u: u, km: km });
+    });
+
+    candidates.sort(function(a, b) { return a.km - b.km; });
+    renderCarousel(candidates.slice(0, MAX_CARDS));
+  }
+
+  // ── Geolocation plumbing ─────────────────────────────────
+  function onPosition(pos) {
+    var lat = pos.coords.latitude, lng = pos.coords.longitude;
+    window.__punaMyGeo = { lat: lat, lng: lng, ts: Date.now() };
+    uploadMyLocation(lat, lng);
+    checkNearby(lat, lng);
+  }
+  function onPositionError() { /* silent — permission denied, unsupported, or timeout */ }
+
+  function startGeoWatch() {
+    if (_watchId !== null || !navigator.geolocation) return;
+    try {
+      _watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+        enableHighAccuracy: false,
+        maximumAge: 60000,
+        timeout: 20000
+      });
+    } catch (e) {}
+  }
+
+  // ── Periodically re-check against freshly pulled users ──
+  setInterval(function() {
+    refreshUsersSnapshot().then(function() {
+      if (window.__punaMyGeo) checkNearby(window.__punaMyGeo.lat, window.__punaMyGeo.lng);
+    });
+  }, POLL_OTHERS_MS);
+
+  // ── Kick off automatically once someone is logged in ────
+  var _geoInitIntvl = setInterval(function() {
+    if (window.__punaActiveUser) {
+      clearInterval(_geoInitIntvl);
+      startGeoWatch();
+    }
+  }, 800);
+
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && window.__punaActiveUser) startGeoWatch();
+  });
+})();
+</script>
 </body>
 </html>
 
