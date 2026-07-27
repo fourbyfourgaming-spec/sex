@@ -1621,6 +1621,8 @@
 
   function openSettings() {
     settingsStack = [];
+    var mainEl = document.getElementById('settings-main');
+    if (mainEl) mainEl.scrollTop = 0;
     document.getElementById('settings-main').classList.remove('hidden');
     document.getElementById('settings-app').classList.add('hidden');
     document.getElementById('settings-account').classList.add('hidden');
@@ -1660,7 +1662,11 @@
     document.getElementById('settings-main').classList.add('hidden');
     document.getElementById('settings-app').classList.add('hidden');
     document.getElementById('settings-account').classList.add('hidden');
-    document.getElementById('settings-' + page).classList.remove('hidden');
+    const targetPage = document.getElementById('settings-' + page);
+    if (targetPage) {
+      targetPage.classList.remove('hidden');
+      targetPage.scrollTop = 0;
+    }
     document.getElementById('settings-title').textContent = page === 'app' ? 'App Settings' : 'Account Settings';
     document.getElementById('settings-back').classList.remove('hidden');
     settingsStack.push(page);
@@ -1670,7 +1676,11 @@
     settingsStack.pop();
     document.getElementById('settings-app').classList.add('hidden');
     document.getElementById('settings-account').classList.add('hidden');
-    document.getElementById('settings-main').classList.remove('hidden');
+    var mainEl = document.getElementById('settings-main');
+    if (mainEl) {
+      mainEl.classList.remove('hidden');
+      mainEl.scrollTop = 0;
+    }
     document.getElementById('settings-title').textContent = 'Settings';
     document.getElementById('settings-back').classList.add('hidden');
   }
@@ -2268,10 +2278,10 @@
               <span class="reel-username">${escapeHTML(uploader ? uploader.nickname : reel.email)}</span>
               ${reel.email !== currentUser.email ? `<button class="follow-btn ${isFollowing(currentUser.email, reel.email) ? 'following' : ''}" data-target="${reel.email}" onclick="toggleFollow('${reel.email}');event.stopPropagation()">${isFollowing(currentUser.email, reel.email) ? 'Following' : 'Follow'}</button>` : ''}
             </div>
-            <div class="reel-title">${escapeHTML(reel.title)}</div>
+            <div class="reel-title">${formatHashtags(reel.title)}</div>
           </div>
         </div>
-        ${reel.description ? `<div class="reel-desc">${escapeHTML(reel.description)}</div>` : ''}
+        ${reel.description ? `<div class="reel-desc">${formatHashtags(reel.description)}</div>` : ''}
         <div class="reel-date">${formatReelDate(reel.createdAt)}</div>
       </div>
 
@@ -2826,8 +2836,7 @@
   }
 
   function formatCommentText(text) {
-    // Highlight @mentions and make them tappable
-    return escapeHTML(text).replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+    return formatHashtags(text);
   }
 
   function formatCommentTime(ts) {
@@ -3048,6 +3057,7 @@
     if (sub) sub.textContent = 'Everyone can see this reel';
     document.getElementById('reel-title').value = '';
     document.getElementById('reel-desc').value = '';
+    if (typeof updateUploadHashtagPreviews === 'function') updateUploadHashtagPreviews();
     document.getElementById('upload-preview-video').classList.add('hidden');
     document.getElementById('upload-preview-video').src = '';
     document.getElementById('upload-drop').querySelector('p').textContent = 'Tap to choose a video';
@@ -3697,6 +3707,42 @@
   function escapeHTML(str) {
     return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
+  function formatHashtags(text) {
+    if (!text) return '';
+    const escaped = escapeHTML(text);
+    return escaped
+      .replace(/(#\([^\)]+\)|#[\w\u00C0-\u024F\u0400-\u04FF]+)/g, '<span class="hashtag">$1</span>')
+      .replace(/@([\w]+)/g, '<span class="mention">@$1</span>');
+  }
+  window.formatHashtags = formatHashtags;
+
+  function updateUploadHashtagPreviews() {
+    const titleInput = document.getElementById('reel-title');
+    const titlePrev  = document.getElementById('reel-title-preview');
+    if (titleInput && titlePrev) {
+      const val = titleInput.value.trim();
+      if (val.includes('#')) {
+        titlePrev.innerHTML = formatHashtags(val);
+        titlePrev.classList.remove('hidden');
+      } else {
+        titlePrev.innerHTML = '';
+        titlePrev.classList.add('hidden');
+      }
+    }
+    const descInput = document.getElementById('reel-desc');
+    const descPrev  = document.getElementById('reel-desc-preview');
+    if (descInput && descPrev) {
+      const val = descInput.value.trim();
+      if (val.includes('#')) {
+        descPrev.innerHTML = formatHashtags(val);
+        descPrev.classList.remove('hidden');
+      } else {
+        descPrev.innerHTML = '';
+        descPrev.classList.add('hidden');
+      }
+    }
+  }
+  window.updateUploadHashtagPreviews = updateUploadHashtagPreviews;
 
   // ════════════════════════════════════════════════════════
   //  INIT
@@ -3805,7 +3851,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
   window.openHubSheet = openHubSheet;
 
   function closeHubSheet(e) {
-    if (e && e.target !== document.getElementById('hub-sheet-overlay')) return;
+    if (e && e.target && e.target !== document.getElementById('hub-sheet-overlay') && e !== true) return;
     const overlay = document.getElementById('hub-sheet-overlay');
     if (overlay) overlay.classList.remove('open');
     const inp = document.getElementById('hub-search-input');

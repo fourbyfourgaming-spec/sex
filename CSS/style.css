@@ -1151,6 +1151,33 @@ input, textarea, select {
 .reel-username { color: #fff; font-weight: 700; font-size: 0.92rem; line-height: 1.2; }
 .reel-title    { color: #fff; font-size: 0.86rem; font-weight: 600; margin-top: 2px; line-height: 1.35; text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
 .reel-desc     { color: rgba(255,255,255,0.9); font-size: 0.8rem;  line-height: 1.35; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+
+/* ── Hashtag Highlighting (#tag) ── */
+.hashtag {
+  color: var(--accent) !important; /* Lime green: #c9f542 */
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(201,245,66,0.3);
+}
+.field-hashtag-preview {
+  margin-top: 6px;
+  font-size: 0.82rem;
+  color: rgba(255,255,255,0.85);
+  background: rgba(201,245,66,0.08);
+  border: 1px solid rgba(201,245,66,0.25);
+  border-radius: 10px;
+  padding: 7px 12px;
+  word-break: break-word;
+  line-height: 1.4;
+  font-family: 'DM Sans', sans-serif;
+  animation: hashtagPrevIn 0.2s ease;
+}
+.field-hashtag-preview.hidden {
+  display: none;
+}
+@keyframes hashtagPrevIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 .reel-date     { color: rgba(255,255,255,0.45); font-size: 0.72rem; margin-top: 2px; letter-spacing: 0.02em; }
 .reel-views    {
   display: inline-flex;
@@ -1819,7 +1846,7 @@ input, textarea, select {
 
 .settings-modal {
   position: absolute; inset: 0; z-index: 400;
-  display: flex; align-items: flex-end;
+  display: flex; flex-direction: column;
 }
 .settings-modal-bg {
   position: absolute; inset: 0;
@@ -1829,20 +1856,31 @@ input, textarea, select {
 .settings-sheet {
   position: relative; z-index: 1;
   background: var(--surface);
-  border-radius: 24px 24px 0 0;
-  width: 100%; max-height: 88dvh;
-  overflow-y: auto; overflow-x: hidden;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom,0px));
+  border-radius: 0;
+  width: 100%; height: 100%; max-height: 100%;
+  display: flex; flex-direction: column;
+  overflow: hidden;
   animation: sheetUp 0.32s cubic-bezier(0.16,1,0.3,1) both;
 }
 .settings-sheet::-webkit-scrollbar { display: none; }
 
 .settings-header {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 18px 18px 14px;
+  padding: calc(14px + env(safe-area-inset-top,0px)) 18px 14px;
   border-bottom: 1px solid var(--border);
   font-weight: 700; font-size: 1rem; position: sticky; top: 0;
-  background: var(--surface); z-index: 2;
+  background: var(--surface); z-index: 10;
+  flex-shrink: 0;
+}
+
+#settings-main,
+#settings-app,
+#settings-account {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom,0px));
 }
 .settings-back {
   background: none; border: none; color: var(--muted);
@@ -2158,7 +2196,7 @@ input, textarea, select {
 ══════════════════════════════════════════════════════════ */
 .edit-profile-modal {
   position: absolute; inset: 0; z-index: 550;
-  display: flex; align-items: flex-end;
+  display: flex; flex-direction: column;
 }
 .edit-profile-bg {
   position: absolute; inset: 0;
@@ -2167,10 +2205,12 @@ input, textarea, select {
 .edit-profile-sheet {
   position: relative; z-index: 1;
   background: var(--surface);
-  border-radius: 24px 24px 0 0;
-  width: 100%; max-height: 90dvh;
+  border-radius: 0;
+  width: 100%; height: 100%; max-height: 100%;
+  display: flex; flex-direction: column;
   overflow-y: auto;
-  padding-bottom: calc(24px + env(safe-area-inset-bottom,0px));
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(32px + env(safe-area-inset-bottom,0px));
   animation: sheetUp 0.3s cubic-bezier(0.16,1,0.3,1) both;
 }
 .edit-profile-sheet::-webkit-scrollbar { display: none; }
@@ -2264,10 +2304,10 @@ input, textarea, select {
 #hub-sheet-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0,0,0,0.55);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-  z-index: 50;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 500;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.28s ease;
@@ -2278,30 +2318,35 @@ input, textarea, select {
 }
 #hub-sheet {
   position: absolute;
-  left: 0; right: 0; bottom: 0;
-  background: #161922;
-  border-radius: 24px 24px 0 0;
-  border-top: 1px solid rgba(255,255,255,0.09);
-  z-index: 51;
-  padding: 12px 18px 32px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  background: linear-gradient(to bottom, rgba(20,23,32,1) 0%, rgba(13,15,20,1) 100%);
+  border-radius: 0;
+  border-top: none;
+  z-index: 501;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) 18px calc(32px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
   transform: translateY(100%);
   transition: transform 0.32s cubic-bezier(0.16,1,0.3,1);
-  max-height: 78%;
-  overflow-y: auto;
+  overflow: hidden;
 }
 #hub-sheet-overlay.open #hub-sheet {
   transform: translateY(0);
 }
-.hub-sheet-handle {
-  width: 36px; height: 4px; border-radius: 2px;
-  background: rgba(255,255,255,0.18);
-  margin: 0 auto 16px;
+.hub-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  flex-shrink: 0;
 }
 .hub-sheet-tabs {
   display: flex;
   gap: 8px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   padding-bottom: 0;
 }
 .hub-sheet-tab {
@@ -2322,9 +2367,16 @@ input, textarea, select {
 }
 
 /* Search panel */
+#hub-panel-search {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow: hidden;
+}
 .hub-search-wrap {
   position: relative;
   margin-bottom: 14px;
+  flex-shrink: 0;
 }
 .hub-search-input {
   width: 100%;
@@ -2344,7 +2396,15 @@ input, textarea, select {
   position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
   color: var(--muted); pointer-events: none;
 }
-.hub-search-results { display: flex; flex-direction: column; gap: 4px; min-height: 60px; }
+.hub-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+}
 .hub-search-empty { color: var(--muted); font-size: 0.82rem; text-align: center; padding: 20px 0; }
 .hub-user-row {
   display: flex; align-items: center; gap: 12px;
@@ -3019,10 +3079,10 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 
 /* ── Hub Sheet (Search/Profile panel) ────────────────── */
 #hub-sheet {
-  border-radius: 28px 28px 0 0;
-  background: linear-gradient(to bottom, rgba(20,23,32,0.98) 0%, rgba(15,17,24,0.99) 100%);
-  border-top: 1px solid rgba(255,255,255,0.08);
-  box-shadow: 0 -16px 64px rgba(0,0,0,0.7);
+  border-radius: 0;
+  background: linear-gradient(to bottom, rgba(20,23,32,1) 0%, rgba(13,15,20,1) 100%);
+  border-top: none;
+  box-shadow: none;
   backdrop-filter: blur(32px);
 }
 .hub-sheet-tab.active {
@@ -3052,8 +3112,8 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 /* ── Settings Sheet ──────────────────────────────────── */
 .settings-sheet {
   background: linear-gradient(to bottom, rgba(20,23,32,1) 0%, rgba(13,15,20,1) 100%);
-  border-radius: 28px 28px 0 0;
-  border-top: 1px solid rgba(255,255,255,0.07);
+  border-radius: 0;
+  border-top: none;
 }
 .settings-item-icon {
   border-radius: 14px;
@@ -3233,7 +3293,7 @@ html.landscape.mobile .reel-nav-btn    { font-size: 0.65rem; }
 .edit-profile-modal .settings-sheet,
 .edit-profile-sheet {
   background: linear-gradient(to bottom, rgba(18,21,30,0.99) 0%, rgba(13,15,20,1) 100%);
-  border-radius: 28px 28px 0 0;
+  border-radius: 0;
 }
 
 /* ── No internet screen ──────────────────────────────── */

@@ -280,11 +280,12 @@
     <!-- HUB SHEET (center button panel) -->
     <div id="hub-sheet-overlay" onclick="closeHubSheet(event)">
       <div id="hub-sheet" onclick="event.stopPropagation()">
-        <div class="hub-sheet-handle"></div>
-        <!-- Tabs -->
-        <div class="hub-sheet-tabs">
-          <button class="hub-sheet-tab active" id="hub-tab-search" onclick="switchHubTab('search')">🔍 Search</button>
-          <button class="hub-sheet-tab" id="hub-tab-profile" onclick="switchHubTab('profile')">👤 Profile</button>
+        <div class="hub-sheet-header">
+          <div class="hub-sheet-tabs">
+            <button class="hub-sheet-tab active" id="hub-tab-search" onclick="switchHubTab('search')">🔍 Search</button>
+            <button class="hub-sheet-tab" id="hub-tab-profile" onclick="switchHubTab('profile')">👤 Profile</button>
+          </div>
+          <button class="xml-close-btn" onclick="closeHubSheet(true)" title="Close Search">✕</button>
         </div>
 
         <!-- Search Panel -->
@@ -406,11 +407,13 @@
 
       <div class="field" style="margin-top:14px">
         <label for="reel-title">Title</label>
-        <input type="text" id="reel-title" placeholder="Give your reel a title…" maxlength="60"/>
+        <input type="text" id="reel-title" placeholder="Give your reel a title…" maxlength="60" oninput="updateUploadHashtagPreviews()"/>
+        <div id="reel-title-preview" class="field-hashtag-preview hidden"></div>
       </div>
       <div class="field" style="margin-top:10px">
         <label for="reel-desc">Description</label>
-        <input type="text" id="reel-desc" placeholder="Add a description…" maxlength="120"/>
+        <input type="text" id="reel-desc" placeholder="Add a description…" maxlength="120" oninput="updateUploadHashtagPreviews()"/>
+        <div id="reel-desc-preview" class="field-hashtag-preview hidden"></div>
       </div>
 
       <!-- Privacy toggle -->
