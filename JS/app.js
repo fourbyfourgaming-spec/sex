@@ -1,0 +1,8160 @@
+  // ════════════════════════════════════════════════════════
+  //  ANDROID PWA MANIFEST — enables "Add to Home Screen" /
+  //  install as a standalone app, which Android requires for
+  //  fully reliable background push notifications.
+  //  Built + attached at runtime via Blob URL — no separate
+  //  manifest.json file needed.
+  // ════════════════════════════════════════════════════════
+  (function() {
+    var ICON192 = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' rx='40' fill='%230d0f14'/%3E%3Ctext x='96' y='128' text-anchor='middle' font-size='104' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+    var ICON512 = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='108' fill='%230d0f14'/%3E%3Ctext x='256' y='340' text-anchor='middle' font-size='276' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+    var ICON512_SAFE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' fill='%230d0f14'/%3E%3Ctext x='256' y='300' text-anchor='middle' font-size='190' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+
+    var manifest = {
+      name: "punaHub",
+      short_name: "punaHub",
+      description: "punaHub — share your moments",
+      start_url: "./",
+      scope: "./",
+      display: "standalone",
+      orientation: "any",
+      background_color: "#0d0f14",
+      theme_color: "#0d0f14",
+      icons: [
+        { src: ICON192,     sizes: "192x192", type: "image/svg+xml", purpose: "any" },
+        { src: ICON512,     sizes: "512x512", type: "image/svg+xml", purpose: "any" },
+        { src: ICON512_SAFE,sizes: "512x512", type: "image/svg+xml", purpose: "maskable" }
+      ]
+    };
+
+    try {
+      var blob = new Blob([JSON.stringify(manifest)], { type: 'application/manifest+json' });
+      var url  = URL.createObjectURL(blob);
+      var link = document.createElement('link');
+      link.rel  = 'manifest';
+      link.href = url;
+      document.head.appendChild(link);
+    } catch(e) { /* older browsers without Blob/URL support — silently skip */ }
+
+    // ── Capture Android's native install prompt so the app can ──
+    // trigger it from a real button instead of relying on the
+    // browser's own (often-hidden) install menu entry.
+    window.__punaInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', function(e) {
+      e.preventDefault();
+      window.__punaInstallPrompt = e;
+    });
+    window.__punaInstallApp = async function() {
+      var evt = window.__punaInstallPrompt;
+      if (!evt) return 'unavailable';
+      evt.prompt();
+      var choice = await evt.userChoice;
+      window.__punaInstallPrompt = null;
+      return choice.outcome; // 'accepted' | 'dismissed'
+    };
+  })();
+  // ════════════════════════════════════════════════════════
+  //  LOW-END DEVICE MODE — detect weak hardware/connection and
+  //  automatically trim the app down: no blur, no heavy shadows/
+  //  animations, lighter reel quality, slower background polling.
+  //  Runs as early as possible so the very first paint is already
+  //  in the right mode — no flash of expensive effects.
+  // ════════════════════════════════════════════════════════
+  (function() {
+    var mem   = navigator.deviceMemory || 4;       // GB, defaults to 4 if unknown
+    var cores = navigator.hardwareConcurrency || 4;
+    var conn  = navigator.connection || navigator.mozConnection || navigator.webkitConnection || {};
+    var slowNet   = !!conn.saveData || /^(slow-2g|2g|3g)$/.test(conn.effectiveType || '');
+    var reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    var tier;
+    if (mem <= 2 || cores <= 2 || slowNet) {
+      tier = 'low';
+    } else if (mem <= 4 || cores <= 4) {
+      tier = 'mid';
+    } else {
+      tier = 'high';
+    }
+
+    window.__punaPerfTier = tier;
+    window.__punaReducedMotion = reducedMotion;
+
+    var html = document.documentElement;
+    html.classList.add('perf-' + tier);
+    if (reducedMotion) html.classList.add('perf-reduced-motion');
+
+    // ── Global overrides for low/mid tier — cut GPU + CPU cost ──
+    // NOTE: deliberately scoped to the .perf-low/.perf-mid class itself
+    // plus a short, explicit list of known-heavy selectors — NOT a
+    // blanket "*" wildcard, which forces the browser to recompute
+    // matched styles for every single node in the DOM and can itself
+    // cause jank/unresponsiveness on a large page.
+    var heavySelectors = [
+      '.pnp-card', '#pnp-bell-wrap', '#puna-notif-overlay',
+      '.nearby-card', '#nearby-carousel-wrap', '#profile-suggest-section',
+      '#main-notif-bar', '.reel-topbar', '.hub-sheet', '#follow-post-toast'
+    ].join(', ');
+
+    var css = [
+      // Low-end: strip the expensive stuff on known heavy components only
+      '.perf-low ' + heavySelectors.split(', ').join(', .perf-low ') + '{',
+        'backdrop-filter:none!important;',
+        '-webkit-backdrop-filter:none!important;',
+        'animation:none!important;',
+        'transition:none!important;',
+        'box-shadow:none!important;',
+      '}',
+      // Mid-tier: drop just the heaviest bit (blur) on those same components
+      '.perf-mid ' + heavySelectors.split(', ').join(', .perf-mid ') + '{',
+        'backdrop-filter:none!important;',
+        '-webkit-backdrop-filter:none!important;',
+      '}',
+      // Respect OS-level reduced motion — scoped the same way
+      '.perf-reduced-motion ' + heavySelectors.split(', ').join(', .perf-reduced-motion ') + '{',
+        'animation-duration:0.001ms!important;',
+        'animation-iteration-count:1!important;',
+        'transition-duration:0.001ms!important;',
+      '}'
+    ].join('');
+    var styleEl = document.createElement('style');
+    styleEl.id = 'perf-mode-style';
+    styleEl.textContent = css;
+    document.head.appendChild(styleEl);
+  })();
+  // ════════════════════════════════════════════════════════
+  //  punaHub UNIVERSAL NOTIFICATION ENGINE  v3
+  //  ✅ Windows  — Chrome, Edge, Firefox (all support Web Notifications)
+  //  ✅ Android  — Chrome, Samsung Internet (via ServiceWorker)
+  //  ✅ Fast     — shows instantly, no queuing delays
+  //  ✅ Deduped  — same tag = replaces, not stacks
+  // ════════════════════════════════════════════════════════
+  (function() {
+
+    // ── App icon embedded as SVG data URL ───────────────────
+    var ICON  = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230d0f14'/%3E%3Ctext x='32' y='46' text-anchor='middle' font-size='36' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+    var BADGE = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230d0f14'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-size='18' fill='%23c9f542'%3E%E2%9C%A6%3C/text%3E%3C/svg%3E";
+
+    // ── Service Worker code — handles background notifications ──
+    // Registered via blob URL so no separate SW file is needed
+    var SW_CODE = [
+      'var ICON="' + ICON + '";',
+      // Handle Web Push events (background push from server)
+      'self.addEventListener("push",function(e){',
+      '  var d={};try{d=e.data?e.data.json():{}}catch(x){d={body:e.data?e.data.text():""}}',
+      '  var o={',
+      '    body:d.body||"New activity on punaHub",',
+      '    icon:d.icon||ICON,badge:ICON,',
+      '    tag:d.tag||"punahub",renotify:true,',
+      '    requireInteraction:false,silent:false,',
+      '    vibrate:[200,80,200,80,200],',
+      '    timestamp:d.ts||Date.now(),',
+      '    data:{url:d.url||"/",notif:d}',
+      '  };',
+      '  if(d.image&&!d.image.startsWith("data:"))o.image=d.image;',
+      '  e.waitUntil(self.registration.showNotification(d.title||"punaHub",o));',
+      '});',
+      // Notification click — focus or open tab
+      'self.addEventListener("notificationclick",function(e){',
+      '  e.notification.close();',
+      '  if(e.action==="dismiss")return;',
+      '  var url=(e.notification.data&&e.notification.data.url)||"/";',
+      '  e.waitUntil(clients.matchAll({type:"window",includeUncontrolled:true}).then(function(cs){',
+      '    for(var i=0;i<cs.length;i++){if("focus"in cs[i]){cs[i].focus();return;}}',
+      '    if(clients.openWindow)clients.openWindow(url);',
+      '  }));',
+      '});',
+      // Push subscription change — re-subscribe automatically
+      'self.addEventListener("pushsubscriptionchange",function(e){',
+      '  e.waitUntil(self.registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:e.oldSubscription&&e.oldSubscription.options&&e.oldSubscription.options.applicationServerKey}).then(function(sub){',
+      '    return fetch("'+('__SUPABASE_PUSH_URL__')+'",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({type:"resubscribe",subscription:sub})}).catch(function(){});',
+      '  }));',
+      '});'
+    ].join('');
+
+    var _swReg = null;
+
+    // Register SW immediately — don't wait
+    function registerSW() {
+      if (!('serviceWorker' in navigator)) return;
+      try {
+        var blob = new Blob([SW_CODE], { type: 'application/javascript' });
+        var url  = URL.createObjectURL(blob);
+        navigator.serviceWorker.register(url, { scope: '/' })
+          .then(function(r) {
+            _swReg = r;
+            window.__swReg = r;
+            // Also grab any existing active SW
+            if (!_swReg.active) {
+              navigator.serviceWorker.ready.then(function(ready) { _swReg = ready; window.__swReg = ready; });
+            }
+          })
+          .catch(function(e) { console.warn('[punaHub SW]', e.message); });
+      } catch(e) { console.warn('[punaHub SW blob]', e); }
+    }
+
+    // ── Request permission ───────────────────────────────────
+    async function requestPermission() {
+      if (!('Notification' in window)) return 'unsupported';
+      if (Notification.permission === 'granted') return 'granted';
+      if (Notification.permission === 'denied')  return 'denied';
+      try {
+        var r = await Notification.requestPermission();
+        return r;
+      } catch(e) { return 'error'; }
+    }
+
+    // ── SHOW — instant, works on Windows + Android ───────────
+    // title : string  — bold header
+    // body  : string  — main message text
+    // image : string  — avatar/image URL (shown on Android 12+, ignored on Windows)
+    // tag   : string  — dedup key (same tag = replace existing, not stack)
+    async function show(title, body, image, tag) {
+      if (!('Notification' in window)) return;
+      if (Notification.permission !== 'granted') return;
+
+      var opts = {
+        body:               body  || 'New activity on punaHub',
+        icon:               ICON,
+        badge:              BADGE,
+        tag:                tag   || ('puna-' + Date.now()),
+        renotify:           true,   // always vibrate/sound even if same tag
+        requireInteraction: false,  // auto-dismiss (Windows keeps until clicked)
+        silent:             false,
+        timestamp:          Date.now(),
+        // Vibration — Android only, ignored on Windows (no error thrown)
+        vibrate:            [100, 50, 100],
+        // Action buttons — Android Chrome + some desktop Chromium
+        actions: [
+          { action: 'open',    title: '👀 Open' },
+          { action: 'dismiss', title: '✕ Dismiss' }
+        ],
+        data: { title: title, body: body, image: image }
+      };
+
+      // Add image only for non-base64 URLs (base64 crashes Android notif)
+      if (image && image.length > 0 && !image.startsWith('data:')) {
+        opts.image = image;
+      }
+
+      // Try SW first (Android needs SW for full notification support)
+      // Fall back to direct Notification API (works fine on Windows/Desktop)
+      try {
+        var reg = _swReg || window.__swReg;
+        // If no SW yet, try to grab the ready one (non-blocking with timeout)
+        if (!reg && navigator.serviceWorker) {
+          try {
+            var timeout = new Promise(function(_, rej) { setTimeout(function(){ rej('timeout'); }, 300); });
+            reg = await Promise.race([navigator.serviceWorker.ready, timeout]);
+          } catch(e) { reg = null; }
+        }
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, opts);
+        } else {
+          // Direct Notification API — always works on Windows Chrome/Edge/Firefox
+          // Works on Android too when app is in foreground
+          new Notification(title, {
+            body:    opts.body,
+            icon:    opts.icon,
+            badge:   opts.badge,
+            tag:     opts.tag,
+            silent:  false,
+            renotify: true
+          });
+        }
+      } catch(e) {
+        // Last resort fallback — bare minimum
+        try { new Notification(title, { body: opts.body, icon: opts.icon, tag: opts.tag }); } catch(e2) {}
+      }
+    }
+
+    // ── Export global API — FULLY ACTIVE ────────────────────
+    window.__punaNotif = {
+      requestPermission: requestPermission,
+      show:              show,
+      register:          registerSW,
+      icon:              ICON,
+      isSupported: function() { return ('Notification' in window); },
+      isGranted:   function() { return ('Notification' in window) && Notification.permission === 'granted'; }
+    };
+
+    // Register SW immediately on script load
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', registerSW);
+    } else {
+      registerSW();
+    }
+
+  })();
+
+  // ══════════════════════════════════════════════════════════
+  //  WEB PUSH ENGINE — subscribe device, relay to Supabase Edge Fn
+  //  ✅ Works on Android Chrome, Windows Chrome/Edge/Firefox
+  //  ✅ Background push even when app is closed
+  // ══════════════════════════════════════════════════════════
+  (function() {
+
+    // ── VAPID public key (generated — matches Edge Function) ──
+    var VAPID_PUBLIC_KEY = 'BIOIeHOJdthC2DTUTn3NrY751kCRVmtiifNwl2OgLzuA6UogmKVi13I_7FI90netvv-Ct5tY1y7RW_dprCSfMGc';
+
+    // Convert VAPID key from base64url to Uint8Array
+    function urlB64ToUint8Array(b64) {
+      var padding = '='.repeat((4 - b64.length % 4) % 4);
+      var base64  = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+      var raw     = atob(base64);
+      var arr     = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return arr;
+    }
+
+    // ── Subscribe this device to Web Push ────────────────────
+    async function subscribePush(userEmail) {
+      if (!userEmail) return null;
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        console.log('[punaHub Push] PushManager not supported on this device');
+        return null;
+      }
+      if (Notification.permission !== 'granted') return null;
+
+      try {
+        // Wait for SW to be ready
+        var reg = await navigator.serviceWorker.ready;
+
+        // Check for existing subscription — reuse if valid
+        var existing = await reg.pushManager.getSubscription();
+        if (existing) {
+          await _savePushSub(userEmail, existing);
+          console.log('[punaHub Push] ✅ Reused existing push subscription');
+          return existing;
+        }
+
+        // Subscribe to push
+        var sub = await reg.pushManager.subscribe({
+          userVisibleOnly:    true,
+          applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY)
+        });
+
+        await _savePushSub(userEmail, sub);
+        console.log('[punaHub Push] ✅ New push subscription saved for', userEmail);
+        return sub;
+
+      } catch(e) {
+        console.warn('[punaHub Push] Subscribe failed:', e.message);
+        return null;
+      }
+    }
+
+    // ── Save subscription to Supabase ─────────────────────────
+    async function _savePushSub(userEmail, sub) {
+      if (!window.sb || !sub) return;
+      try {
+        var subJson = sub.toJSON();
+        await window.sb.from('punahub_push_subs').upsert({
+          user_email: userEmail,
+          endpoint:   sub.endpoint,
+          p256dh:     subJson.keys && subJson.keys.p256dh,
+          auth:       subJson.keys && subJson.keys.auth,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_email,endpoint' });
+      } catch(e) {
+        console.warn('[punaHub Push] Save sub failed:', e.message);
+      }
+    }
+
+    // ── Send push via Supabase Edge Function ─────────────────
+    // Called server-side equivalent: we call the Edge Fn with the target email
+    // The Edge Fn looks up their subscriptions and sends Web Push
+    async function sendPushNotif(toEmail, title, body, tag, icon) {
+      if (!toEmail) return;
+      var SB_URL  = (typeof window.SB_URL  !== 'undefined' ? window.SB_URL  : '') || 'https://hafjrxixytudodnuptky.supabase.co';
+      var SB_ANON = (typeof window.SB_ANON !== 'undefined' ? window.SB_ANON : '') || '';
+      var endpoint = SB_URL + '/functions/v1/push-notify';
+
+      var payload = JSON.stringify({
+        to_email: toEmail,
+        title:    title || 'punaHub',
+        body:     body  || 'New activity',
+        tag:      tag   || 'punahub',
+        icon:     icon  || ''
+      });
+
+      console.log('[punaHub Push] Sending to', toEmail, '→', endpoint);
+
+      // Retry up to 3 times with 1s delay
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          var res = await fetch(endpoint, {
+            method:  'POST',
+            headers: {
+              'Content-Type':  'application/json',
+              'Authorization': 'Bearer ' + SB_ANON
+            },
+            body: payload
+          });
+          if (res.ok) {
+            var data = await res.json().catch(function(){ return {}; });
+            console.log('[punaHub Push] ✅ Sent! subs hit:', data.sent, '| attempt:', attempt);
+            return;
+          } else {
+            var errText = await res.text().catch(function(){ return res.status; });
+            console.warn('[punaHub Push] ❌ Edge Fn returned', res.status, ':', errText);
+            if (res.status === 401 || res.status === 403) return; // auth error — no point retrying
+          }
+        } catch(e) {
+          console.warn('[punaHub Push] attempt', attempt, 'failed:', e.message);
+        }
+        if (attempt < 3) await new Promise(function(r){ setTimeout(r, 1000 * attempt); });
+      }
+    }
+
+    // ── Expose globally ────────────────────────────────────────
+    window.__punaPush = {
+      subscribe:   subscribePush,
+      send:        sendPushNotif,
+      vapidKey:    VAPID_PUBLIC_KEY
+    };
+
+  })();
+
+  // ══════════════════════════════════════════════════════════
+  //  NOTIFICATION PERMISSION SYSTEM — works in ALL browsers
+  //  Chrome · Firefox · Edge · Safari · Android · iOS
+  //  Shows branded prompt → triggers real browser dialog
+  //  Handles: unsupported / denied / granted / dismissed
+  // ══════════════════════════════════════════════════════════
+  (function() {
+
+    // ── Detect browser & support level ──────────────────────
+    function getBrowserInfo() {
+      var ua = navigator.userAgent;
+      var isIOS     = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+      var isSafari  = /^((?!chrome|android).)*safari/i.test(ua);
+      var isFirefox = /Firefox/.test(ua);
+      var isEdge    = /Edg\//.test(ua);
+      var isChrome  = /Chrome/.test(ua) && !isEdge;
+      var isAndroid = /Android/.test(ua);
+      var supported = 'Notification' in window;
+      // iOS Safari < 16.4 does NOT support Web Notifications at all
+      var iosSafariNoSupport = isIOS && isSafari && !('serviceWorker' in navigator);
+      return { isIOS, isSafari, isFirefox, isEdge, isChrome, isAndroid, supported, iosSafariNoSupport };
+    }
+
+    // ── Inject styles once ──────────────────────────────────
+    function injectStyles() {
+      if (document.getElementById('pnp-styles')) return;
+      var s = document.createElement('style');
+      s.id = 'pnp-styles';
+      s.textContent = [
+        '@keyframes punaPromptIn{from{opacity:0;transform:translateY(48px)}to{opacity:1;transform:translateY(0)}}',
+        '@keyframes punaPromptOut{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(48px)}}',
+        '@keyframes pnpPulse{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,0.4)}50%{box-shadow:0 0 0 8px rgba(201,245,66,0)}}',
+        '#puna-notif-overlay{position:fixed;inset:0;z-index:999999;display:flex;align-items:flex-end;justify-content:center;padding:0 0 24px;background:rgba(0,0,0,0.78);animation:punaPromptIn 0.4s cubic-bezier(0.16,1,0.3,1) both}',
+        '#pnp-card{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#181d2b 0%,#0f1218 100%);border:1.5px solid rgba(201,245,66,0.3);border-radius:24px;padding:20px 18px 18px;box-shadow:0 0 0 4px rgba(201,245,66,0.06),0 32px 64px rgba(0,0,0,0.9);font-family:"DM Sans",system-ui,sans-serif;overflow:hidden;position:relative}',
+        '#pnp-card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(201,245,66,0.5),transparent)}',
+        '#pnp-header{display:flex;align-items:center;gap:14px;margin-bottom:14px}',
+        '#pnp-bell-wrap{width:54px;height:54px;border-radius:16px;background:rgba(201,245,66,0.08);border:1.5px solid rgba(201,245,66,0.25);display:flex;align-items:center;justify-content:center;font-size:1.8rem;flex-shrink:0;animation:bellShake 0.9s ease 0.6s both,pnpPulse 2s ease 1.5s 3}',
+        '#pnp-titles{flex:1}',
+        '#pnp-title{font-size:1.02rem;font-weight:700;color:#fff;line-height:1.3}',
+        '#pnp-subtitle{font-size:0.76rem;color:#6b7280;margin-top:2px;display:flex;align-items:center;gap:5px}',
+        '#pnp-browser-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:2px 8px;font-size:0.7rem;color:#9ca3af}',
+        '#pnp-desc{font-size:0.82rem;color:#9ca3af;line-height:1.6;margin-bottom:16px}',
+        '#pnp-desc strong{color:#c9f542;font-weight:600}',
+        '#pnp-features{display:flex;flex-direction:column;gap:7px;margin-bottom:18px}',
+        '.pnp-feat{display:flex;align-items:center;gap:10px;font-size:0.8rem;color:#9ca3af}',
+        '.pnp-feat-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.9rem;flex-shrink:0}',
+        '#pnp-btns{display:flex;gap:9px}',
+        '#pnp-allow{flex:1;background:#c9f542;color:#0d0f14;border:none;border-radius:13px;padding:14px 10px;font-size:0.9rem;font-weight:700;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:7px}',
+        '#pnp-allow:hover{background:#d4f75a;transform:translateY(-1px)}',
+        '#pnp-allow:active{transform:translateY(0)}',
+        '#pnp-skip{background:rgba(255,255,255,0.06);color:#6b7280;border:1px solid rgba(255,255,255,0.09);border-radius:13px;padding:14px 16px;font-size:0.84rem;cursor:pointer;font-family:"DM Sans",sans-serif;transition:all 0.15s;white-space:nowrap}',
+        '#pnp-skip:hover{background:rgba(255,255,255,0.11);color:#d1d5db}',
+        '#pnp-status{margin-top:11px;font-size:0.74rem;text-align:center;color:#4b5563;min-height:16px}',
+        // Denied state card
+        '#pnp-denied-card{width:min(calc(100vw - 24px),400px);background:linear-gradient(145deg,#1e1215,#110e0e);border:1.5px solid rgba(255,107,107,0.3);border-radius:24px;padding:20px 18px;box-shadow:0 32px 64px rgba(0,0,0,0.9);font-family:"DM Sans",system-ui,sans-serif}',
+        '#pnp-denied-card h3{font-size:0.95rem;font-weight:700;color:#fff;margin-bottom:8px}',
+        '#pnp-denied-steps{font-size:0.8rem;color:#9ca3af;line-height:1.7;margin-bottom:14px}',
+        '#pnp-denied-steps b{color:#fbbf24}',
+        '#pnp-denied-ok{width:100%;background:rgba(255,255,255,0.08);color:#e8eaf0;border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:12px;font-size:0.88rem;cursor:pointer;font-family:"DM Sans",sans-serif}',
+        // Unsupported card
+        '#pnp-unsupported{width:min(calc(100vw - 24px),400px);background:#111418;border:1.5px solid rgba(255,255,255,0.08);border-radius:24px;padding:18px;font-family:"DM Sans",sans-serif;text-align:center;color:#9ca3af;font-size:0.82rem}',
+        '#pnp-unsupported strong{display:block;color:#fff;font-size:0.95rem;margin-bottom:6px}',
+      ].join('');
+      document.head.appendChild(s);
+    }
+
+    // ── Get browser display name ─────────────────────────────
+    function getBrowserName(info) {
+      if (info.isFirefox) return { name: 'Firefox', icon: '🦊' };
+      if (info.isEdge)    return { name: 'Edge',    icon: '🌐' };
+      if (info.isAndroid) return { name: 'Chrome Android', icon: '📱' };
+      if (info.isChrome)  return { name: 'Chrome',  icon: '🔵' };
+      if (info.isSafari)  return { name: 'Safari',  icon: '🧭' };
+      return { name: 'Browser', icon: '🌍' };
+    }
+
+    // ── Get browser-specific "how to re-enable" instructions ─
+    function getDeniedInstructions(info) {
+      if (info.isChrome && info.isAndroid) return '<b>Android Chrome:</b> Tap the 🔒 lock icon in the address bar → Site settings → Notifications → Allow';
+      if (info.isChrome)  return '<b>Chrome:</b> Click the 🔒 lock icon in address bar → Notifications → Allow → Reload page';
+      if (info.isFirefox) return '<b>Firefox:</b> Click the 🔒 lock icon → Connection Secure → More Information → Permissions → Receive Notifications → Allow';
+      if (info.isEdge)    return '<b>Edge:</b> Click the 🔒 lock icon → Notifications → Allow → Reload page';
+      if (info.isSafari)  return '<b>Safari:</b> Safari menu → Settings for This Website → Notifications → Allow';
+      return 'Click the 🔒 lock icon in your browser address bar → Notifications → Allow → Reload';
+    }
+
+    // ── Dismiss overlay ──────────────────────────────────────
+    function dismiss(overlay) {
+      if (!overlay || !overlay.parentNode) return;
+      overlay.style.animation = 'punaPromptOut 0.28s cubic-bezier(0.4,0,1,1) forwards';
+      setTimeout(function(){ if (overlay.parentNode) overlay.remove(); }, 270);
+    }
+
+    // ── After permission granted ─────────────────────────────
+    function onGranted(statusEl) {
+      if (statusEl) { statusEl.style.color = '#c9f542'; statusEl.textContent = '✅ Notifications enabled!'; }
+      var cu = window.__punaActiveUser;
+      if (cu && cu.email && window.__punaPush) {
+        window.__punaPush.subscribe(cu.email);
+      }
+      setTimeout(function() {
+        if (window.__punaNotif && window.__punaNotif.isGranted()) {
+          window.__punaNotif.show('punaHub 🔔', "You're all set! Notifications are now active.", '', 'puna-welcome');
+        }
+      }, 900);
+    }
+
+    // ── Main function ────────────────────────────────────────
+    window.__punaAskNotifPermission = async function(forceShow) {
+      injectStyles();
+      var info = getBrowserInfo();
+
+      // Already granted — silently subscribe push and exit
+      if (info.supported && Notification.permission === 'granted') {
+        var cu = window.__punaActiveUser;
+        if (cu && cu.email && window.__punaPush) window.__punaPush.subscribe(cu.email);
+        return;
+      }
+
+      // Always show until permission is granted — no asked/snooze block
+
+      // Remove any existing overlay
+      var old = document.getElementById('puna-notif-overlay');
+      if (old) old.remove();
+
+      var overlay = document.createElement('div');
+      overlay.id  = 'puna-notif-overlay';
+
+      // ── Case 1: Not supported at all ───────────────────────
+      if (!info.supported || info.iosSafariNoSupport) {
+        overlay.innerHTML =
+          '<div id="pnp-unsupported">' +
+            '<span style="font-size:2rem;display:block;margin-bottom:8px">😔</span>' +
+            '<strong>Notifications not supported</strong>' +
+            'Your browser does not support push notifications.<br>' +
+            (info.isIOS ? 'On iPhone: Add punaHub to Home Screen first (Share → Add to Home Screen), then open from there.' :
+             'Try Chrome or Firefox for full notification support.') +
+            '<br><br><button onclick="document.getElementById(\'puna-notif-overlay\').remove()" ' +
+            'style="background:rgba(255,255,255,0.08);color:#e8eaf0;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:10px 20px;cursor:pointer;font-family:\'DM Sans\',sans-serif;font-size:0.85rem;margin-top:4px">Got it</button>' +
+          '</div>';
+        (document.getElementById('app-frame') || document.body).appendChild(overlay);
+        overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+        return;
+      }
+
+      // ── Case 2: Already denied — show re-enable guide ─────
+      if (Notification.permission === 'denied') {
+        var instructions = getDeniedInstructions(info);
+        overlay.innerHTML =
+          '<div id="pnp-denied-card">' +
+            '<div style="font-size:1.8rem;margin-bottom:10px">🔕</div>' +
+            '<h3>Notifications are blocked</h3>' +
+            '<div id="pnp-denied-steps">' + instructions + '</div>' +
+            '<button id="pnp-denied-ok">Got it</button>' +
+          '</div>';
+        (document.getElementById('app-frame') || document.body).appendChild(overlay);
+        document.getElementById('pnp-denied-ok').onclick = function(){ dismiss(overlay); };
+        overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+        return;
+      }
+
+      // ── Case 3: Not yet asked — show full prompt ───────────
+      var bInfo   = getBrowserName(info);
+      var featColor = { follow:'rgba(201,245,66,0.12)', like:'rgba(255,82,82,0.12)', comment:'rgba(66,245,213,0.12)' };
+
+      overlay.innerHTML =
+        '<div id="pnp-card">' +
+          '<div id="pnp-header">' +
+            '<div id="pnp-bell-wrap">🔔</div>' +
+            '<div id="pnp-titles">' +
+              '<div id="pnp-title">Stay in the loop</div>' +
+              '<div id="pnp-subtitle">' +
+                '<span id="pnp-browser-badge">' + bInfo.icon + ' ' + bInfo.name + '</span>' +
+                '<span>· punaHub</span>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div id="pnp-features">' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.follow + '">👤</div><span>Someone <strong style="color:#c9f542">followed</strong> you</span></div>' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.like + '">❤️</div><span>Someone <strong style="color:#ff6b6b">liked</strong> your reel</span></div>' +
+            '<div class="pnp-feat"><div class="pnp-feat-icon" style="background:' + featColor.comment + '">💬</div><span>Someone <strong style="color:#42f5d5">commented</strong> on your reel</span></div>' +
+          '</div>' +
+          '<div id="pnp-btns">' +
+            '<button id="pnp-allow">🔔&nbsp; Allow Notifications</button>' +
+            '<button id="pnp-skip">Not now</button>' +
+          '</div>' +
+          '<div id="pnp-status"></div>' +
+        '</div>';
+
+      (document.getElementById('app-frame') || document.body).appendChild(overlay);
+      overlay.addEventListener('click', function(e){ if(e.target===overlay) dismiss(overlay); });
+
+      document.getElementById('pnp-skip').onclick = function() {
+        dismiss(overlay); // just close — will ask again next page load
+      };
+
+      document.getElementById('pnp-allow').onclick = async function() {
+        var btn      = document.getElementById('pnp-allow');
+        var statusEl = document.getElementById('pnp-status');
+        if (btn) { btn.textContent = '⏳ Waiting...'; btn.style.opacity = '0.7'; btn.disabled = true; }
+
+        var result = await window.__punaNotif.requestPermission();
+
+        if (result === 'granted') {
+          dismiss(overlay);
+          onGranted(statusEl);
+        } else if (result === 'denied') {
+          dismiss(overlay);
+          // Show denied guide after short delay
+          setTimeout(function(){ window.__punaAskNotifPermission(true); }, 400);
+        } else {
+          // dismissed without choosing
+          if (btn) { btn.innerHTML = '🔔&nbsp; Allow Notifications'; btn.style.opacity = '1'; btn.disabled = false; }
+          if (statusEl) { statusEl.style.color = '#fbbf24'; statusEl.textContent = 'Please click Allow in the browser popup above ↑'; }
+        }
+      };
+    };
+
+    // ── Auto-show on page load (if not asked yet / snooze expired) ──
+    window.__punaCheckNotifPrompt = function() {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') return;
+      window.__punaAskNotifPermission();
+    };
+
+    // Fire on every page load — shows before login, every time, until Allow is clicked
+    (function() {
+      function _askOnLoad() {
+        if (!('Notification' in window) || Notification.permission === 'granted') return;
+        // Staggered well past the welcome bar (800ms) and demo notification
+        // (1500ms) so we're not animating three heavy overlays at once.
+        setTimeout(function() {
+          if (typeof window.__punaAskNotifPermission === 'function') window.__punaAskNotifPermission();
+        }, 3800);
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _askOnLoad);
+      else _askOnLoad();
+    })();
+
+  })();
+// ── Device Detection & Adaptive UI ───────────────────────
+(function() {
+  const html = document.documentElement;
+  const ua   = navigator.userAgent;
+
+  // Device type classes
+  const isIOS     = /iPad|iPhone|iPod/.test(ua);
+  const isAndroid = /Android/.test(ua);
+  const isMobile  = isIOS || isAndroid || window.innerWidth < 600;
+  const isTablet  = !isMobile && window.innerWidth >= 600 && window.innerWidth < 1024;
+  const isDesktop = window.innerWidth >= 1024;
+
+  if (isIOS)     html.classList.add('ios');
+  if (isAndroid) html.classList.add('android');
+  if (isMobile)  html.classList.add('mobile');
+  if (isTablet)  html.classList.add('tablet');
+  if (isDesktop) html.classList.add('desktop');
+
+  // Safe area detection
+  const hasNotch = isIOS && window.screen.height >= 812;
+  if (hasNotch)  html.classList.add('has-notch');
+
+  // Dark mode (already dark app, but good to know)
+  if (window.matchMedia('(prefers-color-scheme: dark)').matches)
+    html.classList.add('prefers-dark');
+
+  // Pixel density
+  if (window.devicePixelRatio >= 2) html.classList.add('retina');
+
+  // Orientation handling
+  function handleOrientation() {
+    const isLandscape = window.innerWidth > window.innerHeight;
+    html.classList.toggle('landscape', isLandscape);
+    html.classList.toggle('portrait', !isLandscape);
+    // Update CSS variable for available height (avoids 100vh iOS bug)
+    document.documentElement.style.setProperty('--vh', window.innerHeight * 0.01 + 'px');
+    // Update bottom bar height token — Android needs extra room for gesture nav bar
+    const baseBar = isLandscape ? 48 : Math.max(52, Math.min(64, window.innerWidth * 0.14));
+    const androidExtra = isAndroid ? Math.max(16, (window.screen.height - window.innerHeight) > 100 ? 32 : 16) : 0;
+    document.documentElement.style.setProperty('--bottombar-h', (baseBar + androidExtra) + 'px');
+    // Measure actual topbar height and apply exact padding to profile tab
+    requestAnimationFrame(function() {
+      const topbar = document.querySelector('.reel-topbar');
+      if (topbar) {
+        const h = topbar.getBoundingClientRect().height;
+        if (h > 0) {
+          document.documentElement.style.setProperty('--topbar-h', h + 'px');
+          const profileTab = document.getElementById('profile-tab');
+          if (profileTab) profileTab.style.paddingTop = (h + 10) + 'px';
+        }
+      }
+    });
+  }
+  handleOrientation();
+  window.addEventListener('resize', handleOrientation, { passive: true });
+  window.addEventListener('orientationchange', handleOrientation, { passive: true });
+
+  // Keyboard detection (resize on mobile = keyboard open)
+  if (isMobile) {
+    const initialH = window.innerHeight;
+    window.addEventListener('resize', () => {
+      const diff = initialH - window.innerHeight;
+      html.classList.toggle('keyboard-open', diff > 150);
+    }, { passive: true });
+  }
+
+  // Expose device info globally
+  window.__device = { isIOS, isAndroid, isMobile, isTablet, isDesktop, hasNotch };
+})();
+  // ════════════════════════════════════════════════════════
+  //  XML STORAGE  —  all user data is persisted as XML
+  // ════════════════════════════════════════════════════════
+
+  /* ── Escape special chars for XML text nodes ── */
+  function xmlEscape(str) {
+    return String(str || '')
+      .replace(/&/g,  '&amp;')
+      .replace(/</g,  '&lt;')
+      .replace(/>/g,  '&gt;')
+      .replace(/"/g,  '&quot;')
+      .replace(/'/g,  '&apos;');
+  }
+
+  /* ── Serialize users object → XML string ── */
+  function usersToXML(users) {
+    const lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<punaHub>', '  <users>'];
+    for (const email in users) {
+      const u = users[email];
+      lines.push('    <user>');
+      lines.push(`      <email>${xmlEscape(u.email)}</email>`);
+      lines.push(`      <nickname>${xmlEscape(u.nickname)}</nickname>`);
+      lines.push(`      <password>${xmlEscape(u.password)}</password>`);
+      lines.push(`      <dob>${xmlEscape(u.dob)}</dob>`);
+      // avatar is base64 — store in CDATA to avoid escaping huge string
+      lines.push(`      <avatar><![CDATA[${u.avatar || ''}]]></avatar>`);
+      lines.push('    </user>');
+    }
+    lines.push('  </users>', '</punaHub>');
+    return lines.join('\n');
+  }
+
+  /* ── Parse XML string → users object ── */
+  function xmlToUsers(xmlStr) {
+    const users = {};
+    try {
+      const parser = new DOMParser();
+      const doc    = parser.parseFromString(xmlStr, 'application/xml');
+      const err    = doc.querySelector('parsererror');
+      if (err) return users;
+      doc.querySelectorAll('user').forEach(node => {
+        const get = tag => { const el = node.querySelector(tag); return el ? el.textContent : ''; };
+        const email = get('email').trim().toLowerCase();
+        if (email) users[email] = {
+          email,
+          nickname : get('nickname'),
+          password : get('password'),
+          dob      : get('dob'),
+          avatar   : get('avatar'),
+        };
+      });
+    } catch(e) { /* ignore parse errors */ }
+    return users;
+  }
+
+  /* ── Public helpers (same API as before) ── */
+  function getUsers() {
+    const raw = localStorage.getItem('punahub_users_xml');
+    return raw ? xmlToUsers(raw) : {};
+  }
+  function saveUsers(users) {
+    // Immediately update in-memory cache so getUsers() returns fresh data at once
+    if (window.__sbData) window.__sbData.users = users;
+    // Auto-sync to Supabase (debounced)
+    if (window.__cloudSync) window.__cloudSync('users', users);
+    localStorage.setItem('punahub_users_xml', usersToXML(users));
+  }
+
+  /* ── Session stored as XML in sessionStorage ── */
+  function userToXML(u) {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<session>',
+      `  <email>${xmlEscape(u.email)}</email>`,
+      `  <nickname>${xmlEscape(u.nickname)}</nickname>`,
+      `  <password>${xmlEscape(u.password)}</password>`,
+      `  <dob>${xmlEscape(u.dob)}</dob>`,
+      `  <avatar><![CDATA[${u.avatar || ''}]]></avatar>`,
+      '</session>'
+    ].join('\n');
+  }
+  function xmlToUser(xmlStr) {
+    try {
+      const doc = new DOMParser().parseFromString(xmlStr, 'application/xml');
+      if (doc.querySelector('parsererror')) return null;
+      const get = tag => { const el = doc.querySelector(tag); return el ? el.textContent : ''; };
+      return { email: get('email'), nickname: get('nickname'), password: get('password'), dob: get('dob'), avatar: get('avatar') };
+    } catch { return null; }
+  }
+  const AUTOLOGIN_KEY = 'punahub_autologin_xml';
+
+  const getSession = () => {
+    // Prefer sessionStorage (current tab), fall back to persistent localStorage
+    return xmlToUser(sessionStorage.getItem('currentUser_xml') || '')
+        || xmlToUser(localStorage.getItem(AUTOLOGIN_KEY) || '');
+  };
+
+  const setSession = u => {
+    const xml = userToXML(u);
+    sessionStorage.setItem('currentUser_xml', xml);
+    localStorage.setItem(AUTOLOGIN_KEY, xml); // persist across sessions
+  };
+
+  const clearSession = () => {
+    sessionStorage.removeItem('currentUser_xml');
+    localStorage.removeItem(AUTOLOGIN_KEY); // also wipe persistent login
+  };
+
+  function showCard(id) {
+    ['auth-card','avatar-card','reel-screen'].forEach(c => {
+      const el = document.getElementById(c);
+      if (el) el.classList.toggle('hidden', c !== id);
+    });
+  }
+
+  function showMsg(id, text, type) {
+    const el = document.getElementById(id);
+    el.textContent = text;
+    el.className = 'message ' + type;
+  }
+  function clearMessages() {
+    document.querySelectorAll('.message').forEach(m => { m.textContent = ''; m.className = 'message'; });
+  }
+
+  // ── DOB dropdowns ──────────────────────────────────────
+  function populateDOB() {
+    const dayEl = document.getElementById('signup-day');
+    const yearEl = document.getElementById('signup-year');
+    for (let d = 1; d <= 31; d++) {
+      const o = document.createElement('option');
+      o.value = String(d).padStart(2,'0'); o.textContent = d;
+      dayEl.appendChild(o);
+    }
+    for (let y = new Date().getFullYear() - 18; y >= 1900; y--) {
+      const o = document.createElement('option');
+      o.value = y; o.textContent = y;
+      yearEl.appendChild(o);
+    }
+  }
+
+  // ── Tab switching ──────────────────────────────────────
+  function switchTab(tab) {
+    document.querySelectorAll('.tab') .forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.form').forEach(f => f.classList.remove('active'));
+    document.getElementById('tab-'  + tab).classList.add('active');
+    document.getElementById('form-' + tab).classList.add('active');
+    clearMessages();
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  AUTH
+  // ════════════════════════════════════════════════════════
+  function handleSignUp(e) {
+    e.preventDefault();
+    const nickname = document.getElementById('signup-nickname').value.trim();
+    const day      = document.getElementById('signup-day').value;
+    const month    = document.getElementById('signup-month').value;
+    const year     = document.getElementById('signup-year').value;
+    const email    = document.getElementById('signup-email').value.trim().toLowerCase();
+    const password = document.getElementById('signup-password').value;
+    if (!day || !month || !year) { showMsg('signup-msg','Please select your full date of birth.','error'); return; }
+
+    // ── 18+ age check ──────────────────────────────────────
+    const today   = new Date();
+    const birthDate = new Date(`${year}-${month}-${day}`);
+    let age = today.getFullYear() - birthDate.getFullYear();
+    const monthDiff = today.getMonth() - birthDate.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) age--;
+    if (age < 18) {
+      showMsg('signup-msg', '🔞 You must be 18 or older to sign up.', 'error');
+      return;
+    }
+
+    const users = getUsers();
+    if (users[email]) { showMsg('signup-msg','This email is already registered.','error'); return; }
+    const user = { nickname, dob:`${day}/${month}/${year}`, email, password, avatar: '' };
+    users[email] = user;
+    saveUsers(users);
+    setSession(user);
+    document.getElementById('form-signup').reset();
+    goToAvatarStep(user);
+
+  }
+
+  function handleSignIn(e) {
+    e.preventDefault();
+    const email    = document.getElementById('signin-email').value.trim().toLowerCase();
+    const password = document.getElementById('signin-password').value.trim();
+    const users    = getUsers();
+    const user     = users[email];
+    if (!user || user.password !== password) { showMsg('signin-msg','Invalid email or password.','error'); return; }
+    setSession(user);
+    goToAvatarStep(user);
+  }
+
+  function handleLogout() {
+    clearSession();
+    window.__punaActiveUser = null;          // clear live engine user reference
+    window.__punaLoginComplete = false;      // gate: friend-suggestion features off until next full login
+    if (typeof window.__nearbyReset === 'function') window.__nearbyReset();
+    croppedDataURL = null;
+    document.getElementById('avatar-result').src = '';
+    document.getElementById('avatar-result').classList.add('hidden');
+    document.getElementById('avatar-placeholder').classList.remove('hidden');
+    document.getElementById('crop-area').classList.add('hidden');
+    document.getElementById('zoom-slider').value = 1;
+    switchTab('signin');
+    showCard('auth-card');
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  AVATAR STEP
+  // ════════════════════════════════════════════════════════
+  function goToAvatarStep(user) {
+    // Pre-fill existing avatar if any
+    const imgEl = document.getElementById('avatar-result');
+    const phEl  = document.getElementById('avatar-placeholder');
+    if (user.avatar) {
+      imgEl.src = user.avatar;
+      imgEl.classList.remove('hidden');
+      phEl.classList.add('hidden');
+      croppedDataURL = user.avatar;
+    } else {
+      imgEl.src = '';
+      imgEl.classList.add('hidden');
+      phEl.classList.remove('hidden');
+      croppedDataURL = null;
+    }
+    showCard('avatar-card');
+  }
+
+  async function saveAvatar() {
+    const user = getSession();
+    if (!user) return;
+    if (croppedDataURL) {
+      const oldAvatar = user.avatar;
+      user.avatar = croppedDataURL;
+
+      // Upload immediately to Supabase Storage if available
+      if (window.sb) {
+        try {
+          const avatarPath = `avatars/${user.email.replace(/[^a-z0-9]/gi,'_')}.jpg`;
+          // Remove old avatar file from storage
+          if (oldAvatar && oldAvatar.includes('supabase')) {
+            try { await window.sb.storage.from('punahub').remove([avatarPath]); } catch(e) {}
+          }
+          const res  = await fetch(croppedDataURL);
+          const blob = await res.blob();
+          await window.sb.storage.from('punahub').upload(avatarPath, blob, { upsert: true, contentType: 'image/jpeg' });
+          const { data: urlData } = window.sb.storage.from('punahub').getPublicUrl(avatarPath);
+          user.avatar = urlData.publicUrl + '?v=' + Date.now();
+        } catch(e) {
+          console.warn('[punaHub] saveAvatar cloud upload failed, keeping base64:', e.message);
+          user.avatar = croppedDataURL;
+        }
+      }
+
+      const users = getUsers();
+      users[user.email] = user;
+      saveUsers(users);
+      setSession(user);
+    }
+    showWelcome(user);
+  }
+
+  function skipAvatar() {
+    showWelcome(getSession());
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  WELCOME
+  // ════════════════════════════════════════════════════════
+  function showWelcome(user) {
+    initReelScreen(user);
+    showCard('reel-screen');
+    // Sign-in success notification removed
+  }
+
+  // ── Storage info panel ─────────────────────────────────
+  function updateStorageInfo() {
+    const raw   = localStorage.getItem('punahub_users_xml') || '';
+    const bytes = new Blob([raw]).size;
+    const kb    = (bytes / 1024).toFixed(1);
+    const mb    = (bytes / (1024 * 1024)).toFixed(3);
+    const MAX   = 5 * 1024 * 1024; // ~5MB localStorage limit
+    const pct   = Math.min((bytes / MAX) * 100, 100).toFixed(1);
+
+    const sizeEl = document.getElementById('storage-size');
+    const barEl  = document.getElementById('storage-bar-fill');
+    const lblEl  = document.getElementById('storage-bar-label');
+
+    if (sizeEl) sizeEl.textContent = bytes < 1024 ? bytes + ' B' : kb < 1024 ? kb + ' KB' : mb + ' MB';
+    if (barEl)  { barEl.style.width = pct + '%'; barEl.className = 'storage-bar-fill' + (pct > 80 ? ' warn' : ''); }
+    if (lblEl)  lblEl.textContent = (kb < 1024 ? kb + ' KB' : mb + ' MB') + ' / ~5 MB (' + pct + '%)';
+  }
+
+  function confirmClearData() {
+    if (confirm('⚠️ This will delete ALL punaHub data from this browser, including all accounts and profile pictures. Continue?')) {
+      localStorage.removeItem('punahub_users_xml');
+      clearSession();
+      updateStorageInfo();
+      showToast('🗑️ All data cleared');
+      setTimeout(() => { switchTab('signin'); showCard('auth-card'); }, 1200);
+    }
+  }
+
+  function showToast(msg) {
+    const existing = document.getElementById('sec-toast');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.id = 'sec-toast';
+    toast.textContent = msg;
+    toast.style.cssText = `position:fixed;bottom:100px;left:50%;transform:translateX(-50%) translateY(20px);background:#1e2330;color:#e8eaf0;border:1px solid #272c38;padding:12px 24px;border-radius:30px;font-size:0.88rem;font-family:'DM Sans',sans-serif;z-index:2147483647;box-shadow:0 8px 30px rgba(0,0,0,0.5);animation:toastIn 0.3s cubic-bezier(0.16,1,0.3,1) forwards;`;
+    if (!document.getElementById('toast-style')) {
+      const s = document.createElement('style'); s.id='toast-style';
+      s.textContent = `@keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}@keyframes toastOut{from{opacity:1;transform:translateX(-50%) translateY(0)}to{opacity:0;transform:translateX(-50%) translateY(20px)}}`;
+      document.head.appendChild(s);
+    }
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.style.animation='toastOut 0.3s ease forwards'; setTimeout(()=>toast.remove(),320); }, 2200);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  CROP ENGINE
+  // ════════════════════════════════════════════════════════
+  let img        = new Image();
+  let isDragging = false;
+  let dragStart  = { x: 0, y: 0 };
+  let offset     = { x: 0, y: 0 };
+  let lastOffset = { x: 0, y: 0 };
+  let scale      = 1;
+  let croppedDataURL = null;
+
+  // Touch pinch
+  let lastPinchDist = null;
+
+  const CROP_SIZE = 260; // px — circle diameter in canvas
+
+  function onFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      img = new Image();
+      img.onload = () => {
+        offset = { x: 0, y: 0 };
+        lastOffset = { x: 0, y: 0 };
+        document.getElementById('zoom-slider').value = 1;
+        scale = 1;
+        document.getElementById('crop-area').classList.remove('hidden');
+        setupCanvas();
+        drawCrop();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = ''; // allow re-selecting same file
+  }
+
+  function setupCanvas() {
+    const canvas = document.getElementById('crop-canvas');
+    canvas.width  = CROP_SIZE;
+    canvas.height = CROP_SIZE;
+
+    // Mouse events
+    canvas.onmousedown  = e => { isDragging = true; dragStart = { x: e.clientX - offset.x, y: e.clientY - offset.y }; };
+    canvas.onmousemove  = e => { if (!isDragging) return; offset = { x: e.clientX - dragStart.x, y: e.clientY - dragStart.y }; drawCrop(); };
+    canvas.onmouseup    = () => { isDragging = false; lastOffset = { ...offset }; };
+    canvas.onmouseleave = () => { isDragging = false; };
+
+    // Touch events
+    canvas.ontouchstart = e => {
+      e.preventDefault();
+      if (e.touches.length === 1) {
+        isDragging = true;
+        dragStart = { x: e.touches[0].clientX - offset.x, y: e.touches[0].clientY - offset.y };
+        lastPinchDist = null;
+      } else if (e.touches.length === 2) {
+        isDragging = false;
+        lastPinchDist = pinchDist(e.touches);
+      }
+    };
+    canvas.ontouchmove = e => {
+      e.preventDefault();
+      if (e.touches.length === 1 && isDragging) {
+        offset = { x: e.touches[0].clientX - dragStart.x, y: e.touches[0].clientY - dragStart.y };
+        drawCrop();
+      } else if (e.touches.length === 2) {
+        const dist = pinchDist(e.touches);
+        if (lastPinchDist) {
+          const slider = document.getElementById('zoom-slider');
+          let newVal = parseFloat(slider.value) * (dist / lastPinchDist);
+          slider.value = Math.min(Math.max(newVal, 1), 3);
+          drawCrop();
+        }
+        lastPinchDist = dist;
+      }
+    };
+    canvas.ontouchend = e => {
+      if (e.touches.length < 2) lastPinchDist = null;
+      if (e.touches.length === 0) isDragging = false;
+    };
+  }
+
+  function pinchDist(touches) {
+    const dx = touches[0].clientX - touches[1].clientX;
+    const dy = touches[0].clientY - touches[1].clientY;
+    return Math.sqrt(dx*dx + dy*dy);
+  }
+
+  function drawCrop() {
+    const canvas = document.getElementById('crop-canvas');
+    const ctx    = canvas.getContext('2d');
+    scale = parseFloat(document.getElementById('zoom-slider').value);
+
+    const drawW = img.naturalWidth  * scale;
+    const drawH = img.naturalHeight * scale;
+    const x = (CROP_SIZE - drawW) / 2 + offset.x;
+    const y = (CROP_SIZE - drawH) / 2 + offset.y;
+
+    ctx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
+
+    // Dim background
+    ctx.save();
+    ctx.fillStyle = 'rgba(13,15,20,0.7)';
+    ctx.fillRect(0, 0, CROP_SIZE, CROP_SIZE);
+
+    // Draw image clipped to circle
+    ctx.beginPath();
+    ctx.arc(CROP_SIZE/2, CROP_SIZE/2, CROP_SIZE/2 - 2, 0, Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(img, x, y, drawW, drawH);
+    ctx.restore();
+
+    // Circle border
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(CROP_SIZE/2, CROP_SIZE/2, CROP_SIZE/2 - 2, 0, Math.PI*2);
+    ctx.strokeStyle = '#c9f542';
+    ctx.lineWidth   = 2.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  async function applyCrop() {
+    // Render final clean circle to offscreen canvas
+    const out    = document.createElement('canvas');
+    out.width    = 500; out.height = 500;
+    const ctx    = out.getContext('2d');
+    const ratio  = 500 / CROP_SIZE;
+
+    const drawW  = img.naturalWidth  * scale;
+    const drawH  = img.naturalHeight * scale;
+    const x      = ((CROP_SIZE - drawW) / 2 + offset.x) * ratio;
+    const y      = ((CROP_SIZE - drawH) / 2 + offset.y) * ratio;
+
+    ctx.beginPath();
+    ctx.arc(250, 250, 250, 0, Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(img, x, y, drawW * ratio, drawH * ratio);
+
+    const base64 = out.toDataURL('image/jpeg', 0.88);
+
+    // Upload to Cloudinary if configured
+    if (window.CLOUDINARY_CLOUD && window.CLOUDINARY_PRESET && window.CLOUDINARY_PRESET !== 'PASTE_PRESET_NAME') {
+      try {
+        const blob = await (await fetch(base64)).blob();
+        const form = new FormData();
+        form.append('file', blob);
+        form.append('upload_preset', window.CLOUDINARY_PRESET);
+        form.append('folder', 'punahub/avatars');
+        form.append('public_id', 'avatar_' + Date.now());
+        const res  = await fetch(`https://api.cloudinary.com/v1_1/${window.CLOUDINARY_CLOUD}/image/upload`, { method:'POST', body:form });
+        const data = await res.json();
+        croppedDataURL = data.secure_url || base64;
+      } catch(e) { croppedDataURL = base64; }
+    } else {
+      croppedDataURL = base64;
+    }
+
+    const imgEl = document.getElementById('avatar-result');
+    imgEl.src   = croppedDataURL;
+    imgEl.classList.remove('hidden');
+    document.getElementById('avatar-placeholder').classList.add('hidden');
+    document.getElementById('crop-area').classList.add('hidden');
+  }
+
+  function cancelCrop() {
+    document.getElementById('crop-area').classList.add('hidden');
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  XML VIEWER
+  // ════════════════════════════════════════════════════════
+  function viewXML() {
+    const raw = localStorage.getItem('punahub_users_xml') || '<!-- No data stored yet -->';
+    // Pretty-print by re-parsing
+    let display = raw;
+    try {
+      const doc = new DOMParser().parseFromString(raw, 'application/xml');
+      const xs  = new XMLSerializer();
+      display   = xs.serializeToString(doc);
+      // Simple indent for readability
+      display = display
+        .replace(/></g, '>\n<')
+        .split('\n')
+        .map(l => l.trim())
+        .filter(l => l.length)
+        .join('\n');
+    } catch(e) {}
+    document.getElementById('xml-pre').textContent = display;
+    document.getElementById('xml-modal').classList.remove('hidden');
+  }
+  function closeXML(e) {
+    if (e.target === document.getElementById('xml-modal'))
+      document.getElementById('xml-modal').classList.add('hidden');
+  }
+  function downloadXML() {
+    const raw  = localStorage.getItem('punahub_users_xml') || '';
+    const blob = new Blob([raw], { type: 'application/xml' });
+    const a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = 'punahub_users.xml';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  SECURITY — disable right-click, inspect, copy, drag
+  // ════════════════════════════════════════════════════════
+
+  // 1. Block right-click context menu
+  document.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    showSecurityToast();
+    return false;
+  });
+
+  // 2. Block common DevTools keyboard shortcuts
+  document.addEventListener('keydown', e => {
+    const key = e.key;
+    const ctrl = e.ctrlKey || e.metaKey;
+
+    // F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C, Ctrl+U (view source), Ctrl+S (save)
+    if (
+      key === 'F12' ||
+      (ctrl && e.shiftKey && (key === 'I' || key === 'i' || key === 'J' || key === 'j' || key === 'C' || key === 'c')) ||
+      (ctrl && (key === 'U' || key === 'u')) ||
+      (ctrl && (key === 'S' || key === 's'))
+    ) {
+      e.preventDefault();
+      showSecurityToast();
+      return false;
+    }
+
+    // Ctrl+A (select all), Ctrl+C (copy), Ctrl+X (cut)
+    if (ctrl && (key === 'a' || key === 'A' || key === 'c' || key === 'C' || key === 'x' || key === 'X')) {
+      e.preventDefault();
+      return false;
+    }
+  });
+
+  // 3. Block text selection
+  document.addEventListener('selectstart', e => {
+    // Allow selection inside input/textarea fields
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    e.preventDefault();
+  });
+
+  // 4. Block drag of images / elements
+  document.addEventListener('dragstart', e => { e.preventDefault(); });
+
+  // 5. Block copy event
+  document.addEventListener('copy', e => {
+    e.clipboardData.setData('text/plain', '');
+    e.preventDefault();
+  });
+
+  // 6. Block cut event
+  document.addEventListener('cut', e => { e.preventDefault(); });
+
+  // 7. DevTools open detector (size-based) — DESKTOP ONLY.
+  // On Android/mobile, outerWidth/outerHeight vs innerWidth/innerHeight
+  // naturally diverge (on-screen keyboard, browser chrome show/hide,
+  // split-screen multitasking, PWA vs tab mode), which falsely triggered
+  // this and blanked the whole app on real devices. Restrict to desktop.
+  (function devToolsGuard() {
+    if (window.__device && (window.__device.isMobile || window.__device.isTablet)) return;
+    const threshold = 160;
+    setInterval(() => {
+      if (
+        window.outerWidth  - window.innerWidth  > threshold ||
+        window.outerHeight - window.innerHeight > threshold
+      ) {
+        document.getElementById('app-frame').innerHTML = `
+          <div style="
+            display:flex;flex-direction:column;align-items:center;justify-content:center;
+            height:100dvh;background:#0d0f14;color:#e8eaf0;font-family:sans-serif;text-align:center;gap:16px;padding:24px;
+          ">
+            <div style="font-size:3rem">🔒</div>
+            <h2 style="font-family:serif;font-size:1.6rem;color:#c9f542">punaHub</h2>
+            <p style="color:#6b7280;max-width:300px">Developer tools detected. Please close them to continue using the app.</p>
+          </div>`;
+      }
+    }, 1000);
+  })();
+
+  // Security toast notification
+  function showSecurityToast() { showToast('🔒 Action not allowed'); }
+
+
+
+
+  // ════════════════════════════════════════════════════════
+  //  PROFILE PICTURE VIEWER
+  // ════════════════════════════════════════════════════════
+  function openProfilePicViewer() {
+    const viewer = document.getElementById('pic-viewer');
+    const img    = document.getElementById('pic-viewer-img');
+    const ph     = document.getElementById('pic-viewer-ph');
+    const name   = document.getElementById('pic-viewer-name');
+
+    // Determine which user is currently being viewed (own profile or searched user)
+    const profileImgEl      = document.getElementById('profile-avatar-img-big');
+    const profileNicknameEl = document.getElementById('profile-nickname');
+    const profileEmailEl    = document.getElementById('profile-email');
+
+    const viewedEmail = (profileEmailEl && profileEmailEl.textContent && profileEmailEl.textContent !== '—')
+      ? profileEmailEl.textContent.trim()
+      : currentUser.email;
+    const isSelf = viewedEmail === currentUser.email;
+
+    // Use the avatar that is currently displayed in the big profile circle
+    const displayedAvatar = (profileImgEl && !profileImgEl.classList.contains('hidden') && profileImgEl.src && profileImgEl.src !== window.location.href)
+      ? profileImgEl.src
+      : (isSelf ? currentUser.avatar : '');
+
+    const displayedNickname = (profileNicknameEl && profileNicknameEl.textContent && profileNicknameEl.textContent !== '—')
+      ? profileNicknameEl.textContent
+      : currentUser.nickname;
+
+    if (displayedAvatar) {
+      img.src = displayedAvatar;
+      img.classList.remove('hidden');
+      ph.classList.add('hidden');
+    } else {
+      img.src = '';
+      img.classList.add('hidden');
+      ph.classList.remove('hidden');
+    }
+    name.textContent = displayedNickname;
+
+    // Hide "Change Photo" when viewing someone else's profile
+    const changePhotoBtn = viewer.querySelector('.pic-viewer-btn.accent');
+    if (changePhotoBtn) changePhotoBtn.style.display = isSelf ? '' : 'none';
+
+    viewer.classList.remove('hidden');
+    requestAnimationFrame(() => viewer.classList.add('visible'));
+  }
+
+  function closeProfilePicViewer() {
+    const viewer = document.getElementById('pic-viewer');
+    viewer.classList.remove('visible');
+    setTimeout(() => viewer.classList.add('hidden'), 280);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  EDIT PROFILE
+  // ════════════════════════════════════════════════════════
+  let epCropImg     = new Image();
+  let epIsDragging  = false;
+  let epDragStart   = { x: 0, y: 0 };
+  let epOffset      = { x: 0, y: 0 };
+  let epScale       = 1;
+  let epCroppedURL  = null;
+  let epLastPinch   = null;
+  const EP_CROP_SIZE = 260;
+
+  function openEditProfile() {
+    // Prefill current data
+    document.getElementById('ep-nickname').value = currentUser.nickname || '';
+    document.getElementById('ep-msg').textContent = '';
+    document.getElementById('ep-msg').className = 'message';
+    document.getElementById('ep-crop-area').classList.add('hidden');
+    epCroppedURL = null;
+
+    // Show current avatar
+    const img = document.getElementById('ep-avatar-img');
+    const ph  = document.getElementById('ep-avatar-ph');
+    if (currentUser.avatar) {
+      img.src = currentUser.avatar; img.classList.remove('hidden'); ph.classList.add('hidden');
+    } else {
+      img.src = ''; img.classList.add('hidden'); ph.classList.remove('hidden');
+    }
+
+    document.getElementById('edit-profile-modal').classList.remove('hidden');
+  }
+
+  function closeEditProfile() {
+    document.getElementById('edit-profile-modal').classList.add('hidden');
+    document.getElementById('ep-crop-area').classList.add('hidden');
+    epCroppedURL = null;
+  }
+
+  async function saveEditProfile() {
+    const nickname = document.getElementById('ep-nickname').value.trim();
+    if (!nickname) {
+      document.getElementById('ep-msg').className = 'message error';
+      document.getElementById('ep-msg').textContent = 'Nickname cannot be empty.';
+      return;
+    }
+
+    const users = getUsers();
+    const user  = users[currentUser.email];
+    if (!user) return;
+
+    user.nickname = nickname;
+
+    if (epCroppedURL) {
+      // Show uploading state
+      document.getElementById('ep-msg').className = 'message';
+      document.getElementById('ep-msg').textContent = '⏳ Uploading avatar…';
+      document.getElementById('ep-msg').style.color = '#c9f542';
+
+      // Store new avatar as base64 first (will be uploaded to cloud by __cloudSync)
+      const oldAvatar = user.avatar;
+      user.avatar = epCroppedURL;
+
+      // If Supabase is available, upload immediately and delete old file
+      if (window.sb) {
+        try {
+          const avatarPath = `avatars/${user.email.replace(/[^a-z0-9]/gi,'_')}.jpg`;
+          // Delete old avatar from storage if it was a cloud URL
+          if (oldAvatar && oldAvatar.includes('supabase')) {
+            try { await window.sb.storage.from('punahub').remove([avatarPath]); } catch(e) {}
+          }
+          // Upload new avatar to Supabase Storage
+          const res  = await fetch(epCroppedURL);
+          const blob = await res.blob();
+          await window.sb.storage.from('punahub').upload(avatarPath, blob, { upsert: true, contentType: 'image/jpeg' });
+          const { data: urlData } = window.sb.storage.from('punahub').getPublicUrl(avatarPath);
+          // Use cache-busted URL so browser fetches the fresh image
+          user.avatar = urlData.publicUrl + '?v=' + Date.now();
+        } catch(e) {
+          console.warn('[punaHub] Avatar cloud upload failed, keeping base64:', e.message);
+          user.avatar = epCroppedURL; // fallback to base64
+        }
+      }
+    }
+
+    users[currentUser.email] = user;
+    saveUsers(users);
+    setSession(user);
+    currentUser = user;
+
+    // Refresh profile UI
+    renderProfile();
+    // Refresh nav avatar
+    setAvatarImg(
+      document.getElementById('nav-avatar-img'),
+      document.getElementById('nav-avatar-ph'),
+      user.avatar
+    );
+    // Also force-refresh any other avatar elements in the DOM
+    document.querySelectorAll('.nav-avatar img, .profile-avatar-big img').forEach(function(el) {
+      if (el) el.src = user.avatar;
+    });
+
+    document.getElementById('ep-msg').style.color = '';
+    document.getElementById('ep-msg').className = 'message success';
+    document.getElementById('ep-msg').textContent = '✅ Profile updated!';
+    setTimeout(() => closeEditProfile(), 1000);
+  }
+
+  // ── EP Crop ────────────────────────────────────────────
+  function onEpFileSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      epCropImg = new Image();
+      epCropImg.onload = () => {
+        epOffset = { x: 0, y: 0 };
+        document.getElementById('ep-zoom-slider').value = 1;
+        epScale = 1;
+        document.getElementById('ep-crop-area').classList.remove('hidden');
+        setupEpCanvas();
+        drawEpCrop();
+      };
+      epCropImg.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }
+
+  function setupEpCanvas() {
+    const canvas = document.getElementById('ep-crop-canvas');
+    canvas.width  = EP_CROP_SIZE;
+    canvas.height = EP_CROP_SIZE;
+
+    canvas.onmousedown  = e => { epIsDragging = true; epDragStart = { x: e.clientX - epOffset.x, y: e.clientY - epOffset.y }; };
+    canvas.onmousemove  = e => { if (!epIsDragging) return; epOffset = { x: e.clientX - epDragStart.x, y: e.clientY - epDragStart.y }; drawEpCrop(); };
+    canvas.onmouseup    = () => { epIsDragging = false; };
+    canvas.onmouseleave = () => { epIsDragging = false; };
+
+    canvas.ontouchstart = e => {
+      e.preventDefault();
+      if (e.touches.length === 1) {
+        epIsDragging = true;
+        epDragStart = { x: e.touches[0].clientX - epOffset.x, y: e.touches[0].clientY - epOffset.y };
+        epLastPinch = null;
+      } else if (e.touches.length === 2) {
+        epIsDragging = false;
+        epLastPinch = pinchDist(e.touches);
+      }
+    };
+    canvas.ontouchmove = e => {
+      e.preventDefault();
+      if (e.touches.length === 1 && epIsDragging) {
+        epOffset = { x: e.touches[0].clientX - epDragStart.x, y: e.touches[0].clientY - epDragStart.y };
+        drawEpCrop();
+      } else if (e.touches.length === 2) {
+        const d = pinchDist(e.touches);
+        if (epLastPinch) {
+          const sl = document.getElementById('ep-zoom-slider');
+          sl.value = Math.min(Math.max(parseFloat(sl.value) * (d / epLastPinch), 1), 3);
+          drawEpCrop();
+        }
+        epLastPinch = d;
+      }
+    };
+    canvas.ontouchend = e => { if (e.touches.length === 0) epIsDragging = false; if (e.touches.length < 2) epLastPinch = null; };
+  }
+
+  function drawEpCrop() {
+    const canvas = document.getElementById('ep-crop-canvas');
+    const ctx    = canvas.getContext('2d');
+    epScale = parseFloat(document.getElementById('ep-zoom-slider').value);
+    const drawW = epCropImg.naturalWidth  * epScale;
+    const drawH = epCropImg.naturalHeight * epScale;
+    const x = (EP_CROP_SIZE - drawW) / 2 + epOffset.x;
+    const y = (EP_CROP_SIZE - drawH) / 2 + epOffset.y;
+
+    ctx.clearRect(0, 0, EP_CROP_SIZE, EP_CROP_SIZE);
+    ctx.save();
+    ctx.fillStyle = 'rgba(13,15,20,0.7)';
+    ctx.fillRect(0, 0, EP_CROP_SIZE, EP_CROP_SIZE);
+    ctx.beginPath();
+    ctx.arc(EP_CROP_SIZE/2, EP_CROP_SIZE/2, EP_CROP_SIZE/2 - 2, 0, Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(epCropImg, x, y, drawW, drawH);
+    ctx.restore();
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(EP_CROP_SIZE/2, EP_CROP_SIZE/2, EP_CROP_SIZE/2 - 2, 0, Math.PI*2);
+    ctx.strokeStyle = '#c9f542';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function applyEpCrop() {
+    const out = document.createElement('canvas');
+    out.width = 500; out.height = 500;
+    const ctx   = out.getContext('2d');
+    const ratio = 500 / EP_CROP_SIZE;
+    const drawW = epCropImg.naturalWidth  * epScale;
+    const drawH = epCropImg.naturalHeight * epScale;
+    const x     = ((EP_CROP_SIZE - drawW) / 2 + epOffset.x) * ratio;
+    const y     = ((EP_CROP_SIZE - drawH) / 2 + epOffset.y) * ratio;
+
+    ctx.beginPath();
+    ctx.arc(250, 250, 250, 0, Math.PI*2);
+    ctx.clip();
+    ctx.drawImage(epCropImg, x, y, drawW * ratio, drawH * ratio);
+    epCroppedURL = out.toDataURL('image/jpeg', 0.88);
+
+    // Update preview
+    const img = document.getElementById('ep-avatar-img');
+    img.src = epCroppedURL;
+    img.classList.remove('hidden');
+    document.getElementById('ep-avatar-ph').classList.add('hidden');
+    document.getElementById('ep-crop-area').classList.add('hidden');
+  }
+
+  function cancelEpCrop() {
+    document.getElementById('ep-crop-area').classList.add('hidden');
+    epCroppedURL = null;
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  SETTINGS
+  // ════════════════════════════════════════════════════════
+  let settingsStack = [];
+
+  function openSettings() {
+    settingsStack = [];
+    document.getElementById('settings-main').classList.remove('hidden');
+    document.getElementById('settings-app').classList.add('hidden');
+    document.getElementById('settings-account').classList.add('hidden');
+    document.getElementById('settings-title').textContent = 'Settings';
+    document.getElementById('settings-back').classList.add('hidden');
+    // Populate account info
+    document.getElementById('acct-nickname').textContent = currentUser.nickname;
+    document.getElementById('acct-email').textContent    = currentUser.email;
+    document.getElementById('acct-dob').textContent      = currentUser.dob || '—';
+    // Storage size
+    const bytes = new Blob([localStorage.getItem('punahub_users_xml')||'']).size
+                + new Blob([localStorage.getItem('punahub_reels')||'']).size
+                + new Blob([localStorage.getItem('punahub_follow')||'']).size;
+    const kb = (bytes/1024).toFixed(1);
+    document.getElementById('app-storage-size').textContent = kb + ' KB used';
+    // Visibility toggle state
+    const appSettings = getAppSettings();
+    const vt = document.getElementById('visibility-toggle');
+    vt.classList.toggle('active', appSettings.publicProfile);
+    document.getElementById('visibility-label').textContent = appSettings.publicProfile ? 'Public' : 'Private';
+    // Reel quality button state
+    const savedQuality = appSettings.reelQuality || defaultQualityForTier();
+    document.querySelectorAll('.quality-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.quality === savedQuality);
+    });
+    const qlbl = document.getElementById('reel-quality-label');
+    if (qlbl) qlbl.textContent = QUALITY_LABELS[savedQuality] || 'Auto';
+    document.getElementById('settings-modal').classList.remove('hidden');
+  }
+
+  function closeSettings() {
+    document.getElementById('settings-modal').classList.add('hidden');
+    settingsStack = [];
+  }
+
+  function openSettingsPage(page) {
+    document.getElementById('settings-main').classList.add('hidden');
+    document.getElementById('settings-app').classList.add('hidden');
+    document.getElementById('settings-account').classList.add('hidden');
+    document.getElementById('settings-' + page).classList.remove('hidden');
+    document.getElementById('settings-title').textContent = page === 'app' ? 'App Settings' : 'Account Settings';
+    document.getElementById('settings-back').classList.remove('hidden');
+    settingsStack.push(page);
+  }
+
+  function settingsBack() {
+    settingsStack.pop();
+    document.getElementById('settings-app').classList.add('hidden');
+    document.getElementById('settings-account').classList.add('hidden');
+    document.getElementById('settings-main').classList.remove('hidden');
+    document.getElementById('settings-title').textContent = 'Settings';
+    document.getElementById('settings-back').classList.add('hidden');
+  }
+
+  function toggleSetting(toggleEl) {
+    toggleEl.classList.toggle('active');
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  REEL QUALITY SETTING
+  // ════════════════════════════════════════════════════════
+  var QUALITY_LABELS = {
+    auto:   'Auto',
+    high:   'High',
+    medium: 'Medium',
+    data:   'Data Saver'
+  };
+
+  function setReelQuality(quality) {
+    // Save — marks this as an explicit user choice, so auto low-end
+    // detection never silently overrides it again.
+    var s = getAppSettings();
+    s.reelQuality = quality;
+    s.reelQualityAuto = false;
+    saveAppSettings(s);
+
+    // Update button UI
+    document.querySelectorAll('.quality-btn').forEach(function(btn) {
+      btn.classList.toggle('active', btn.dataset.quality === quality);
+    });
+    var lbl = document.getElementById('reel-quality-label');
+    if (lbl) lbl.textContent = QUALITY_LABELS[quality] || 'Auto';
+
+    // Apply immediately to any playing videos
+    applyReelQuality(quality);
+  }
+
+  // ── Pick a sensible default quality based on detected device tier ──
+  function defaultQualityForTier() {
+    if (window.__punaPerfTier === 'low')  return 'data';
+    if (window.__punaPerfTier === 'mid')  return 'medium';
+    return 'auto';
+  }
+
+  function applyReelQuality(quality) {
+    // quality affects:
+    //   auto   → preload=none, normal playback (browser decides)
+    //   high   → preload=auto, full resolution
+    //   medium → preload=none, slight compression hint via CSS
+    //   data   → preload=none, lower brightness + pause on non-visible
+    var videos = document.querySelectorAll('.reel-video');
+    videos.forEach(function(v) {
+      switch (quality) {
+        case 'high':
+          v.setAttribute('preload', 'auto');
+          v.style.filter = '';
+          v.style.imageRendering = '';
+          break;
+        case 'medium':
+          v.setAttribute('preload', 'none');
+          v.style.filter = 'contrast(0.96) saturate(0.9)';
+          v.style.imageRendering = '';
+          break;
+        case 'data':
+          v.setAttribute('preload', 'none');
+          v.style.filter = 'brightness(0.92) contrast(0.92) saturate(0.75)';
+          // Unload non-visible videos aggressively to save data
+          var rect = v.getBoundingClientRect();
+          var visible = rect.top < window.innerHeight && rect.bottom > 0;
+          if (!visible && v.src) { v.pause(); v.src = ''; v.load(); }
+          break;
+        default: // auto
+          v.setAttribute('preload', 'none');
+          v.style.filter = '';
+          v.style.imageRendering = '';
+          break;
+      }
+    });
+  }
+
+  // Expose so renderFeed / buildReelCard can apply after render
+  window.__applyReelQuality = function() {
+    var s = getAppSettings();
+    // Auto-pick a lighter default for low/mid-end devices until the
+    // person explicitly picks one themselves (reelQualityAuto !== false).
+    if (!s.reelQuality && s.reelQualityAuto !== false && window.__punaPerfTier && window.__punaPerfTier !== 'high') {
+      s.reelQuality = defaultQualityForTier();
+      s.reelQualityAuto = true;
+      saveAppSettings(s);
+    }
+    applyReelQuality(s.reelQuality || defaultQualityForTier());
+  };
+
+  // Run once on load so the very first reels render already use the
+  // right quality for this device — no waiting for the settings panel.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { window.__applyReelQuality(); });
+  } else {
+    window.__applyReelQuality();
+  }
+
+  function toggleVisibilitySetting() {
+    const s = getAppSettings();
+    s.publicProfile = !s.publicProfile;
+    saveAppSettings(s);
+    const vt = document.getElementById('visibility-toggle');
+    vt.classList.toggle('active', s.publicProfile);
+    document.getElementById('visibility-label').textContent = s.publicProfile ? 'Public' : 'Private';
+    showToast(s.publicProfile ? '🌍 Profile is now Public' : '🔒 Profile is now Private');
+  }
+
+  function getAppSettings() {
+    try { return JSON.parse(localStorage.getItem('punahub_app_settings') || '{}'); } catch { return {}; }
+  }
+  function saveAppSettings(s) {
+    // defaults
+    s.publicProfile = s.publicProfile !== undefined ? s.publicProfile : true;
+    localStorage.setItem('punahub_app_settings', JSON.stringify(s));
+  }
+
+  function confirmDeleteAccount() {
+    if (!confirm('⚠️ DELETE ACCOUNT\n\nThis will permanently delete your account, all reels, and all data. This cannot be undone.\n\nAre you absolutely sure?')) return;
+    if (!confirm('Final confirmation: Delete "' + currentUser.nickname + '"?')) return;
+
+    const deletedEmail = currentUser.email;
+
+    // ── 1. Remove user from users store ──────────────────
+    const users = getUsers();
+    delete users[deletedEmail];
+    saveUsers(users);
+
+    // ── 2. Remove this user's reels ───────────────────────
+    const reels = getReels().filter(r => r.email !== deletedEmail);
+    saveReels(reels);
+
+    // ── 3. Remove follow data for this user ───────────────
+    const fd = getFollowData();
+    delete fd[deletedEmail];
+    for (const email in fd) {
+      fd[email].followers = (fd[email].followers||[]).filter(e => e !== deletedEmail);
+      fd[email].following = (fd[email].following||[]).filter(e => e !== deletedEmail);
+    }
+    saveFollowData(fd);
+
+    // ── 4. Delete from Supabase cloud (all browsers) ──────
+    (async () => {
+      try {
+        const sbClient = window.sb;
+        if (sbClient) {
+          // Delete user record
+          await sbClient.from('punahub_users').delete().eq('email', deletedEmail);
+          // Delete reels
+          await sbClient.from('punahub_reels').delete().eq('data->>email', deletedEmail);
+          // Delete follow record
+          await sbClient.from('punahub_follows').delete().eq('email', deletedEmail);
+          // Remove this user from others' followers/following in Supabase
+          const { data: allFollows } = await sbClient.from('punahub_follows').select('email, data');
+          if (allFollows) {
+            for (const row of allFollows) {
+              const d = row.data || {};
+              const changed =
+                ((d.followers||[]).includes(deletedEmail)) ||
+                ((d.following||[]).includes(deletedEmail));
+              if (changed) {
+                d.followers = (d.followers||[]).filter(e => e !== deletedEmail);
+                d.following = (d.following||[]).filter(e => e !== deletedEmail);
+                await sbClient.from('punahub_follows').upsert({ email: row.email, data: d }, { onConflict: 'email' });
+              }
+            }
+          }
+          // Delete notifications sent to this user
+          await sbClient.from('punahub_notifs').delete().eq('to_email', deletedEmail);
+          // Delete app settings
+          await sbClient.from('punahub_settings').delete().eq('email', deletedEmail);
+          // Delete avatar & reels files from storage
+          try {
+            const { data: files } = await sbClient.storage.from('punahub').list('reels');
+            // Only delete files belonging to deleted user (matched by reel IDs we already removed)
+          } catch(e) {}
+          console.log('[punaHub] Account deleted from Supabase cloud');
+        }
+      } catch(e) {
+        console.warn('[punaHub] Cloud delete error:', e.message);
+      }
+    })();
+
+    // ── 5. Wipe ALL localStorage keys for this app ────────
+    // This clears the account from THIS browser immediately.
+    // Other browsers sync via Supabase (data already deleted above).
+    const keysToRemove = [
+      'punahub_users_xml',
+      'punahub_reels',
+      'punahub_follow',
+      'punahub_app_settings',
+      'punahub_autologin_xml',
+      'punahub_cookie_consent',
+      'punahub_notif_asked',
+      'punahub_notifs_' + deletedEmail,
+    ];
+    keysToRemove.forEach(k => { try { localStorage.removeItem(k); } catch(e) {} });
+    try { sessionStorage.clear(); } catch(e) {}
+
+    clearSession();
+    closeSettings();
+    showToast('🗑 Account deleted from all devices');
+    setTimeout(() => { switchTab('signin'); showCard('auth-card'); }, 1000);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  REEL LONG-PRESS CONTEXT MENU
+  // ════════════════════════════════════════════════════════
+  let ctxReelId         = null;
+  let longPressTimer    = null;
+  const LONG_PRESS_MS   = 600;
+
+  function attachLongPress(card, reelId) {
+    // Mouse
+    card.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
+      longPressTimer = setTimeout(() => { openReelCtx(reelId, e.currentTarget); }, LONG_PRESS_MS);
+    });
+    card.addEventListener('mouseup',   () => clearTimeout(longPressTimer));
+    card.addEventListener('mouseleave',() => clearTimeout(longPressTimer));
+    card.addEventListener('mousemove', () => clearTimeout(longPressTimer));
+
+    // Touch
+    card.addEventListener('touchstart', e => {
+      longPressTimer = setTimeout(() => {
+        if (navigator.vibrate) navigator.vibrate(60);
+        openReelCtx(reelId, card);
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+    card.addEventListener('touchend',   () => clearTimeout(longPressTimer));
+    card.addEventListener('touchmove',  () => clearTimeout(longPressTimer));
+    card.addEventListener('touchcancel',() => clearTimeout(longPressTimer));
+  }
+
+  function openReelCtx(reelId, card) {
+    ctxReelId = reelId;
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === reelId);
+    if (!reel) return;
+
+    // Only owner can access full menu; others just see basic options
+    const isOwner = reel.email === currentUser.email;
+
+    document.getElementById('reel-ctx-title').textContent = reel.title || 'Untitled';
+    document.getElementById('reel-ctx-meta').textContent  =
+      `${formatNum(reel.views||0)} views · ${formatNum(reel.likes||0)} likes`;
+
+    // Thumb
+    const thumbEl = document.getElementById('reel-ctx-thumb');
+    thumbEl.innerHTML = reel.poster ? `<img src="${reel.poster}" alt="">` : '🎬';
+
+    // Delete button — only owner
+    var delBtn = document.getElementById('ctx-delete-btn');
+    if (delBtn) delBtn.style.display = isOwner ? '' : 'none';
+
+    document.getElementById('reel-ctx-backdrop').classList.remove('hidden');
+    document.getElementById('reel-ctx-menu').classList.remove('hidden');
+    document.getElementById('reel-ctx-menu').classList.add('slide-up');
+  }
+
+  function closeReelCtx() {
+    document.getElementById('reel-ctx-backdrop').classList.add('hidden');
+    document.getElementById('reel-ctx-menu').classList.add('hidden');
+    ctxReelId = null;
+  }
+
+  async function ctxDelete() {
+    if (!ctxReelId) return;
+    const allReels = getReels();
+    const targetReel = allReels.find(r => r.id === ctxReelId);
+    if (!targetReel) return;
+    if (!currentUser || targetReel.email !== currentUser.email) {
+      showToast('❌ You can only delete your own reels');
+      closeReelCtx();
+      return;
+    }
+    if (!confirm('Delete this reel? This cannot be undone.')) return;
+
+    const reelIdToDelete = ctxReelId;
+
+    // 1. Remove from localStorage immediately
+    const reels = allReels.filter(r => r.id !== reelIdToDelete);
+    saveReels(reels);
+
+    // 2. Remove from DOM
+    const card = document.querySelector(`.reel-card[data-id="${reelIdToDelete}"]`);
+    if (card) card.remove();
+    closeReelCtx();
+    showToast('Deleting reel…');
+
+    // If feed is empty now
+    if (document.querySelectorAll('.reel-card').length === 0) {
+      document.getElementById('reel-empty').classList.remove('hidden');
+    }
+
+    // 3. Delete from Supabase (table row + storage files)
+    const sbClient = window.sb;
+    if (sbClient) {
+      try {
+        // Delete row from punahub_reels table
+        const { error: dbErr } = await sbClient
+          .from('punahub_reels')
+          .delete()
+          .eq('id', reelIdToDelete);
+        if (dbErr) console.warn('[punaHub] Supabase reel row delete error:', dbErr.message);
+
+        // Delete video and poster files from storage
+        const filesToRemove = [
+          'reels/' + reelIdToDelete + '.mp4',
+          'posters/' + reelIdToDelete + '.jpg'
+        ];
+        const { error: storErr } = await sbClient
+          .storage
+          .from('punahub')
+          .remove(filesToRemove);
+        if (storErr) console.warn('[punaHub] Supabase storage delete error:', storErr.message);
+
+        showToast('✅ Reel deleted from all devices');
+      } catch (e) {
+        console.warn('[punaHub] Delete cloud error:', e.message);
+        showToast('⚠️ Deleted locally — cloud sync failed');
+      }
+    } else {
+      showToast('🗑 Reel deleted');
+    }
+  }
+
+  function ctxShowAnalytics() {
+    if (!ctxReelId) return;
+    closeReelCtx();
+    openAnalytics(ctxReelId);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  ANALYTICS
+  // ════════════════════════════════════════════════════════
+  function openAnalytics(reelId) {
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === reelId);
+    if (!reel) return;
+
+    document.getElementById('analytics-title').textContent = reel.title || 'Untitled';
+    document.getElementById('analytics-date').textContent  =
+      'Posted ' + new Date(reel.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+
+    const thumb = document.getElementById('analytics-thumb');
+    thumb.innerHTML = reel.poster ? `<img src="${reel.poster}" alt="">` : '🎬';
+
+    const views    = reel.views    || 0;
+    const likes    = reel.likes    || 0;
+    const comments = (reel.comments || []).length;
+
+    document.getElementById('a-views').textContent    = formatNum(views);
+    document.getElementById('a-likes').textContent    = formatNum(likes);
+    document.getElementById('a-comments').textContent = formatNum(comments);
+
+    // Engagement = (likes + comments) / views * 100
+    const engagement = views > 0 ? Math.min(((likes + comments) / views) * 100, 100) : 0;
+    document.getElementById('analytics-pct').textContent  = engagement.toFixed(1) + '%';
+    document.getElementById('analytics-bar').style.width  = engagement.toFixed(1) + '%';
+    document.getElementById('analytics-bar').style.background =
+      engagement > 10 ? '#c9f542' : engagement > 5 ? '#42f5d5' : '#6b7280';
+
+    document.getElementById('analytics-modal').classList.remove('hidden');
+  }
+
+  function closeAnalytics() {
+    document.getElementById('analytics-modal').classList.add('hidden');
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  REELS ENGINE
+  // ════════════════════════════════════════════════════════
+  let currentUser   = null;
+  let currentReelId = null; // for comments
+  let videoFile     = null; // staged upload
+
+  // ── Storage helpers for reels ──────────────────────────
+  function getReels() {
+    try { return JSON.parse(localStorage.getItem('punahub_reels') || '[]'); } catch { return []; }
+  }
+  function saveReels(reels) {
+    // Immediately update in-memory cache so getReels() returns fresh data at once
+    if (window.__sbData) window.__sbData.reels = reels;
+    // Auto-sync to Supabase (debounced)
+    if (window.__cloudSync) window.__cloudSync('reels', reels);
+    // Strip large video/poster data before saving to localStorage to avoid quota errors
+    // Cloud (Supabase/Cloudinary) is the source of truth for video data
+    try {
+      const lean = reels.map(r => {
+        const copy = Object.assign({}, r);
+        if (copy.videoDataURL && copy.videoDataURL.startsWith('data:')) delete copy.videoDataURL;
+        if (copy.poster && copy.poster.startsWith('data:')) delete copy.poster;
+        return copy;
+      });
+      localStorage.setItem('punahub_reels', JSON.stringify(lean));
+    } catch(e) {
+      console.warn('localStorage save skipped (quota):', e.message);
+    }
+  }
+  function getUserProfile(email) {
+    const users = getUsers();
+    return users[email] || null;
+  }
+
+  // ── Init reel screen ───────────────────────────────────
+  /* ── Helper: set an avatar <img> with proper opacity handling ── */
+  function setAvatarImg(imgEl, phEl, url) {
+    if (!imgEl) return;
+    imgEl.classList.remove('loaded');
+    if (url) {
+      imgEl.onload = () => {
+        imgEl.classList.add('loaded');
+        imgEl.classList.remove('hidden');
+        if (phEl) phEl.classList.add('hidden');
+      };
+      imgEl.onerror = () => {
+        imgEl.src = '';
+        imgEl.classList.add('hidden');
+        imgEl.classList.remove('loaded');
+        if (phEl) phEl.classList.remove('hidden');
+      };
+      // Handle already-cached images (onload won't fire)
+      imgEl.src = url;
+      if (imgEl.complete && imgEl.naturalWidth > 0) {
+        imgEl.classList.add('loaded');
+        imgEl.classList.remove('hidden');
+        if (phEl) phEl.classList.add('hidden');
+      }
+    } else {
+      imgEl.src = '';
+      imgEl.classList.add('hidden');
+      imgEl.classList.remove('loaded');
+      if (phEl) phEl.classList.remove('hidden');
+    }
+  }
+
+  function initReelScreen(user) {
+    currentUser = user;
+    window.__punaActiveUser = user;          // ← expose so live engine getCU() can read it
+    window.__punaLoginComplete = true;       // ← gate: login is fully complete, friend-suggestion features may run
+    // Track when this session started — only show notifications received AFTER this
+    window.__sessionStartTime = Date.now();
+
+    // Nav avatar
+    setAvatarImg(
+      document.getElementById('nav-avatar-img'),
+      document.getElementById('nav-avatar-ph'),
+      user.avatar
+    );
+
+    // Seed live engine snap + show bell badge count immediately on login
+    setTimeout(function() {
+      try {
+        var key = 'punahub_notifs_' + user.email;
+        var existing = localStorage.getItem(key) || '[]';
+        // Only mark READ notifs as already-shown — unread ones must still ring bell + show badge
+        var arr; try { arr = JSON.parse(existing); } catch(e) { arr = []; }
+        if (window.__punaShownNotifIds) arr.forEach(function(n){ if (n.id && n.read) window.__punaShownNotifIds.add(n.id); });
+        // Tell live engine about the new user — this now handles badge + bell shake too
+        if (typeof window.__punaOnLogin === 'function') window.__punaOnLogin(user);
+      } catch(e) {}
+    }, 300);
+
+    // 🔔 Start Supabase Realtime — receive notifications instantly from other devices
+    if (typeof window.__startNotifRealtime === 'function') {
+      window.__startNotifRealtime(user.email);
+    }
+
+    // 🔔 Ask for device notification permission (smart prompt — respects snooze)
+    setTimeout(function() {
+      if (typeof window.__punaCheckNotifPrompt === 'function') {
+        window.__punaCheckNotifPrompt();
+      } else if (typeof window.__punaAskNotifPermission === 'function') {
+        window.__punaAskNotifPermission();
+      }
+    }, 2000);
+
+    // 🔔 If permission already granted (returning user), re-subscribe push silently
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      setTimeout(function() {
+        if (window.__punaPush) {
+          window.__punaPush.subscribe(user.email);
+        }
+      }, 3000);
+    }
+
+    switchReelTab('feed');
+  }
+
+  // ── Tab: Feed / Profile ────────────────────────────────
+  function switchReelTab(tab, skipProfileRender) {
+    document.getElementById('reel-feed').classList.toggle('hidden', tab !== 'feed');
+    document.getElementById('profile-tab').classList.toggle('hidden', tab !== 'profile');
+    document.getElementById('nav-feed').classList.toggle('active', tab === 'feed');
+    document.getElementById('nav-profile').classList.toggle('active', tab === 'profile');
+
+    if (tab === 'feed') { renderFeed(); setTimeout(setupReelObserver, 100); }
+    if (tab === 'profile') {
+      if (!skipProfileRender) renderProfile(currentUser);
+      else setTimeout(refreshProfileStats, 50); // always refresh stats even if not full re-render
+      // Re-measure topbar and apply exact padding so avatar is never hidden
+      requestAnimationFrame(function() {
+        const topbar = document.querySelector('.reel-topbar');
+        const profileTab = document.getElementById('profile-tab');
+        if (topbar && profileTab) {
+          const h = topbar.getBoundingClientRect().height;
+          if (h > 0) profileTab.style.paddingTop = (h + 10) + 'px';
+        }
+      });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  FEED
+  // ══════════════════════════════════════════════════════
+  function renderFeed() {
+    const allReelsFeed = getReels();
+    // Hide private reels that belong to other users
+    const reels = allReelsFeed.filter(function(r) {
+      if (!r.private) return true;
+      return (typeof currentUser !== 'undefined' && currentUser && r.email === currentUser.email);
+    });
+    const feed    = document.getElementById('reel-feed');
+    const empty   = document.getElementById('reel-empty');
+
+    // Remove existing reel cards (keep empty placeholder)
+    feed.querySelectorAll('.reel-card').forEach(c => c.remove());
+
+    if (reels.length === 0) {
+      empty.classList.remove('hidden');
+      return;
+    }
+    empty.classList.add('hidden');
+
+    // Render newest first (latest uploaded → shown first)
+    [...reels].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).forEach(reel => {
+      const card = buildReelCard(reel);
+      feed.appendChild(card);
+    });
+    // Apply saved reel quality to all videos
+    if (typeof window.__applyReelQuality === 'function') {
+      setTimeout(window.__applyReelQuality, 50);
+    }
+  }
+
+  function buildReelCard(reel) {
+    const card = document.createElement('div');
+    card.className = 'reel-card';
+    card.dataset.id = reel.id;
+
+    const poster = reel.poster || '';
+    const uploader = getUserProfile(reel.email);
+    const avatarSrc = uploader && uploader.avatar ? uploader.avatar : '';
+    const isLiked = reel.likedBy && reel.likedBy.includes(currentUser.email);
+
+    card.innerHTML = `
+      <video class="reel-video" preload="none" playsinline webkit-playsinline loop
+        disablepictureinpicture disableremoteplayback
+        data-src="${reel.videoDataURL || reel.storageUrl || ''}"
+        ${poster ? 'poster="'+poster+'"' : ''}>
+      </video>
+      <div class="reel-gradient"></div>
+
+      <!-- Instagram-style seek slider — bottom of card -->
+      <div class="reel-seek-wrap" id="seek-wrap-${reel.id}">
+        <div class="reel-seek-times">
+          <span class="reel-seek-time" id="seek-cur-${reel.id}">0:00</span>
+          <span class="reel-seek-time" id="seek-dur-${reel.id}">0:00</span>
+        </div>
+        <div class="reel-seek-track" id="seek-track-${reel.id}">
+          <div class="reel-seek-filled" id="seek-filled-${reel.id}"></div>
+        </div>
+      </div>
+
+      <!-- Tap to play/pause -->
+      <div class="reel-tap-area" onclick="togglePlay(this)"></div>
+      <div class="reel-play-icon hidden" id="play-icon-${reel.id}">▶</div>
+
+      <!-- Bottom info -->
+      <div class="reel-info">
+        <div class="reel-user-row">
+          <div class="reel-user-avatar">
+            ${avatarSrc
+  ? `<img src="${avatarSrc}" alt=""
+       onload="this.classList.add('loaded');this.style.opacity=1"
+       onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<span>👤</span>')">`
+  : '<span>👤</span>'}
+          </div>
+          <div class="reel-user-info">
+            <div class="reel-username-row">
+              <span class="reel-username">${escapeHTML(uploader ? uploader.nickname : reel.email)}</span>
+              ${reel.email !== currentUser.email ? `<button class="follow-btn ${isFollowing(currentUser.email, reel.email) ? 'following' : ''}" data-target="${reel.email}" onclick="toggleFollow('${reel.email}');event.stopPropagation()">${isFollowing(currentUser.email, reel.email) ? 'Following' : 'Follow'}</button>` : ''}
+            </div>
+            <div class="reel-title">${escapeHTML(reel.title)}</div>
+          </div>
+        </div>
+        ${reel.description ? `<div class="reel-desc">${escapeHTML(reel.description)}</div>` : ''}
+        <div class="reel-date">${formatReelDate(reel.createdAt)}</div>
+      </div>
+
+      <!-- Right actions -->
+      <div class="reel-actions">
+        <button class="reel-action-btn ${isLiked ? 'liked' : ''}" data-action="like" onclick="toggleLike('${reel.id}', this)">
+          <svg viewBox="0 0 24 24" fill="${isLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+            <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+          </svg>
+          <span>${formatNum(reel.likes || 0)}</span>
+        </button>
+        <button class="reel-action-btn" data-action="comment" onclick="openComments('${reel.id}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+          </svg>
+          <span>${formatNum((reel.comments || []).length)}</span>
+        </button>
+        <button class="reel-action-btn" id="mute-btn-${reel.id}" onclick="toggleMute('${reel.id}',this);event.stopPropagation()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+            <line class="mute-slash" x1="23" y1="9" x2="17" y2="15" style="display:none"/>
+            <line class="mute-slash" x1="17" y1="9" x2="23" y2="15" style="display:none"/>
+            <path class="sound-waves" d="M15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14"/>
+          </svg>
+          <span>Mute</span>
+        </button>
+      </div>
+    `;
+
+    // Long-press handler
+    attachLongPress(card, reel.id);
+
+    // Auto-increment view count on scroll into view
+    const video = card.querySelector('.reel-video');
+    video.muted = false; // default: unmuted
+
+    // ── Instagram-style seek slider ────────────────────────
+    (function setupSeek(vid, reelId) {
+      var track  = card.querySelector('#seek-track-'  + reelId);
+      var filled = card.querySelector('#seek-filled-' + reelId);
+      var thumb  = card.querySelector('#seek-thumb-'  + reelId);
+      var curEl  = card.querySelector('#seek-cur-'    + reelId);
+      var durEl  = card.querySelector('#seek-dur-'    + reelId);
+      if (!track) return;
+
+      var _dragging  = false;
+      var _rvfcHandle = null;
+      var _feedLocked = false;
+
+      function fmtTime(s) {
+        s = Math.floor(s || 0);
+        return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      }
+
+      function setPct(pct) {
+        pct = Math.max(0, Math.min(100, pct));
+        var frac = pct / 100;
+        // scaleX on fill + translateX on thumb — both GPU-composited, zero layout
+        if (filled) filled.style.transform = 'scaleX(' + frac + ')';
+        if (thumb)  thumb.style.transform  = 'translateX(calc(' + pct + '% - 50%))';
+      }
+
+      function syncFrame() {
+        if (_dragging || !vid.duration) return;
+        var pct = (vid.currentTime / vid.duration) * 100;
+        setPct(pct);
+        if (curEl) curEl.textContent = fmtTime(vid.currentTime);
+      }
+
+      // rVFC keeps sync at display Hz; timeupdate fallback for Firefox
+      function onRVFC() {
+        syncFrame();
+        if (!vid.paused && !vid.ended)
+          _rvfcHandle = vid.requestVideoFrameCallback(onRVFC);
+      }
+
+      if (typeof vid.requestVideoFrameCallback === 'function') {
+        vid.addEventListener('play', function() {
+          if (_rvfcHandle) vid.cancelVideoFrameCallback(_rvfcHandle);
+          _rvfcHandle = vid.requestVideoFrameCallback(onRVFC);
+        });
+        vid.addEventListener('pause', function() {
+          if (_rvfcHandle) { vid.cancelVideoFrameCallback(_rvfcHandle); _rvfcHandle = null; }
+          syncFrame();
+        });
+      } else {
+        vid.addEventListener('timeupdate', syncFrame);
+      }
+
+      vid.addEventListener('loadedmetadata', function() {
+        if (durEl) durEl.textContent = fmtTime(vid.duration);
+      });
+      vid.addEventListener('ended', function() { setPct(0); if (curEl) curEl.textContent = '0:00'; });
+
+      // ── Drag / scrub helpers ──────────────────────────────
+      function getPctFromEvent(e) {
+        var rect = track.getBoundingClientRect();
+        var clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        return Math.max(0, Math.min(100, ((clientX - rect.left) / rect.width) * 100));
+      }
+
+      function scrubTo(pct) {
+        if (!vid.duration) return;
+        setPct(pct);
+        vid.currentTime = (pct / 100) * vid.duration;
+        if (curEl) curEl.textContent = fmtTime(vid.currentTime);
+      }
+
+      function startDrag(e) {
+        e.stopPropagation();
+        _dragging = true;
+        track.classList.add('dragging');
+        // Lock feed scroll so dragging doesn't snap to next reel
+        var feed = document.getElementById('reel-feed');
+        if (feed) { feed.style.overflowY = 'hidden'; _feedLocked = true; }
+        scrubTo(getPctFromEvent(e));
+      }
+
+      function moveDrag(e) {
+        if (!_dragging) return;
+        e.stopPropagation();
+        if (e.cancelable) e.preventDefault();
+        scrubTo(getPctFromEvent(e));
+      }
+
+      function endDrag(e) {
+        if (!_dragging) return;
+        e.stopPropagation();
+        _dragging = false;
+        track.classList.remove('dragging');
+        if (_feedLocked) {
+          var feed = document.getElementById('reel-feed');
+          if (feed) feed.style.overflowY = 'scroll';
+          _feedLocked = false;
+        }
+        syncFrame();
+      }
+
+      // Mouse
+      track.addEventListener('mousedown',  startDrag);
+      window.addEventListener('mousemove', moveDrag);
+      window.addEventListener('mouseup',   endDrag);
+
+      // Touch
+      track.addEventListener('touchstart', startDrag,  { passive: false });
+      track.addEventListener('touchmove',  moveDrag,   { passive: false });
+      track.addEventListener('touchend',   endDrag,    { passive: true  });
+
+      // Tap anywhere on track = jump
+      track.addEventListener('click', function(e) {
+        e.stopPropagation();
+        scrubTo(getPctFromEvent(e));
+      });
+
+    })(video, reel.id);    // Apply high frame rate optimizations immediately
+    if (window.__lockVideoFPS) window.__lockVideoFPS(video);
+
+    const obs = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          // Lazy-load src the first time this card becomes visible
+          if (!video.src || video.src === window.location.href) {
+            var lazySrc = video.dataset.src;
+            if (lazySrc) { video.src = lazySrc; video.load(); }
+          }
+          // Restart from beginning every time reel comes into view
+          video.currentTime = 0;
+          // Reset seek slider
+          var seekFilled = card.querySelector('#seek-filled-' + reel.id);
+          var seekThumb  = card.querySelector('#seek-thumb-'  + reel.id);
+          var seekCur    = card.querySelector('#seek-cur-'    + reel.id);
+          if (seekFilled) seekFilled.style.transform = 'scaleX(0)';
+          if (seekThumb)  seekThumb.style.transform  = 'translateX(-50%)';
+          if (seekCur)    seekCur.textContent     = '0:00';
+
+          video.muted = false;
+          video.play().catch(() => {
+            // Browser blocked unmuted autoplay — silently fall back to muted
+            video.muted = true;
+            video.play().catch(() => {});
+            // Sync button to muted state
+            const muteBtn = document.getElementById('mute-btn-' + reel.id);
+            if (muteBtn) {
+              muteBtn.classList.add('muted');
+              muteBtn.querySelectorAll('.mute-slash').forEach(l => l.style.display = '');
+              const w = muteBtn.querySelector('.sound-waves');
+              if (w) w.style.display = 'none';
+              muteBtn.querySelector('span').textContent = 'Sound';
+            }
+          });
+          // Defer view increment — localStorage write must not block scroll frame
+          setTimeout(function(){ incrementView(reel.id); }, 200);
+        } else {
+          video.pause();
+          // Yield the video's decode buffer when fully off-screen
+          // so the active video gets maximum decoder resources
+          if (entry.intersectionRatio === 0) {
+            video.currentTime = 0;
+          }
+        }
+      });
+    // threshold 0.6: play when 60% visible — fires earlier than 0.7 for snappier start
+    // rootMargin pre-warms the next card's src one card-height ahead
+    }, { threshold: 0.6, rootMargin: '0px 0px 10% 0px' });
+    obs.observe(card);
+
+    return card;
+  }
+
+
+
+  function toggleMute(reelId, btn) {
+    const card = document.querySelector(`.reel-card[data-id="${reelId}"]`);
+    if (!card) return;
+    const video = card.querySelector('.reel-video');
+    if (!video) return;
+    video.muted = !video.muted;
+    const isMuted = video.muted;
+    btn.classList.toggle('muted', isMuted);
+    btn.querySelectorAll('.mute-slash').forEach(l => l.style.display = isMuted ? '' : 'none');
+    const waves = btn.querySelector('.sound-waves');
+    if (waves) waves.style.display = isMuted ? 'none' : '';
+    btn.querySelector('span').textContent = isMuted ? 'Sound' : 'Mute';
+    btn.classList.add('shake');
+    setTimeout(() => btn.classList.remove('shake'), 500);
+    if (!isMuted && video.paused) video.play().catch(() => {});
+  }
+
+  // Track whether user has interacted (unlocks autoplay audio) — set once, cheaply
+  var _audioUnlocked = false;
+
+  function togglePlay(tapArea) {
+    const video = tapArea.parentElement.querySelector('.reel-video');
+    const reelId = tapArea.parentElement.dataset.id;
+    const icon = document.getElementById('play-icon-' + reelId);
+
+    // First tap: unlock audio on ALL videos in one deferred pass — only needed once
+    if (!_audioUnlocked) {
+      _audioUnlocked = true;
+      requestAnimationFrame(function() {
+        document.querySelectorAll('.reel-video').forEach(v => {
+          if (v.muted) {
+            v.muted = false;
+            const c = v.closest('.reel-card');
+            if (!c) return;
+            const id = c.dataset.id;
+            const muteBtn = document.getElementById('mute-btn-' + id);
+            if (muteBtn && muteBtn.classList.contains('muted')) {
+              muteBtn.classList.remove('muted');
+              muteBtn.querySelectorAll('.mute-slash').forEach(l => l.style.display = 'none');
+              const w = muteBtn.querySelector('.sound-waves');
+              if (w) w.style.display = '';
+              muteBtn.querySelector('span').textContent = 'Mute';
+            }
+          }
+        });
+      });
+    }
+
+    if (video.paused) {
+      video.play();
+      if (icon) { icon.classList.remove('hidden'); setTimeout(() => icon.classList.add('hidden'), 600); }
+    } else {
+      video.pause();
+      if (icon) { icon.classList.remove('hidden'); }
+    }
+  }
+
+  function incrementView(reelId) {
+    const reels = getReels();
+    const r = reels.find(x => x.id === reelId);
+    if (!r) return;
+    if (!r._viewedBy) r._viewedBy = [];
+    if (r._viewedBy.includes(currentUser.email)) return;
+    r._viewedBy.push(currentUser.email);
+    r.views = (r.views || 0) + 1;
+    saveReels(reels);
+    // Update view count in DOM
+    const card = document.querySelector(`.reel-card[data-id="${reelId}"] .reel-views span`);
+    if (card) card.textContent = formatNum(r.views);
+  }
+
+  // ── Like ────────────────────────────────────────────────
+  function toggleLike(reelId, btn) {
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === reelId);
+    if (!reel) return;
+    if (!reel.likedBy) reel.likedBy = [];
+    const idx = reel.likedBy.indexOf(currentUser.email);
+    const nowLiked = idx === -1;
+    if (nowLiked) {
+      reel.likedBy.push(currentUser.email);
+      reel.likes = (reel.likes || 0) + 1;
+      btn.classList.add('liked');
+      btn.querySelector('svg').setAttribute('fill','currentColor');
+      // Notify post owner (not if liking own post)
+      if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
+        var _likeAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
+        addNotification(reel.email, {
+          id:           'n_like_' + reelId + '_' + currentUser.email.replace(/[^a-z0-9]/gi,'_'),
+          type:         'like',
+          reelId:       reelId,
+          fromEmail:    currentUser.email,
+          fromNickname: currentUser.nickname || currentUser.email.split('@')[0],
+          fromAvatar:   _likeAvatar,
+          message:      (currentUser.nickname || 'Someone') + ' liked your reel',
+          timestamp:    Date.now(),
+          read:         false
+        });
+      }
+    } else {
+      reel.likedBy.splice(idx, 1);
+      reel.likes = Math.max(0, (reel.likes || 1) - 1);
+      btn.classList.remove('liked');
+      btn.querySelector('svg').setAttribute('fill','none');
+    }
+    btn.querySelector('span').textContent = formatNum(reel.likes);
+    // shake animation
+    btn.classList.add('shake');
+    setTimeout(() => btn.classList.remove('shake'), 500);
+    saveReels(reels);
+
+    // ── Supabase: sync like to dedicated table ──────────────
+    if (window.sb) {
+      const likeKey = reelId + '__' + currentUser.email;
+      if (nowLiked) {
+        window.sb.from('punahub_likes').upsert({
+          id: likeKey,
+          reel_id: reelId,
+          user_email: currentUser.email,
+          user_nickname: currentUser.nickname || '',
+          user_avatar: currentUser.avatar || '',
+          created_at: new Date().toISOString()
+        }, { onConflict: 'id' }).then(function(res) {
+          if (res.error) console.warn('[punaHub] like upsert error:', res.error.message);
+        });
+      } else {
+        window.sb.from('punahub_likes').delete()
+          .eq('id', likeKey)
+          .then(function(res) {
+            if (res.error) console.warn('[punaHub] like delete error:', res.error.message);
+          });
+      }
+    }
+  }
+
+  // ── Share (vibrate + copy link) ─────────────────────────
+  function shareReel(reelId, btn) {
+    if (navigator.vibrate) navigator.vibrate([50, 30, 50]);
+    btn.classList.add('shake');
+    setTimeout(() => btn.classList.remove('shake'), 500);
+    const text = `Check out this reel on punaHub! 🎬 #${reelId}`;
+    if (navigator.share) {
+      navigator.share({ title: 'punaHub Reel', text }).catch(()=>{});
+    } else {
+      navigator.clipboard.writeText(text).then(() => showToast('📋 Link copied!')).catch(()=> showToast('📤 Share: ' + text));
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  COMMENTS
+  // ══════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════
+  //  COMMENT SYSTEM — Full Featured
+  // ══════════════════════════════════════════════════════
+  let _commentSort   = 'top';   // 'top' | 'new'
+  let _replyToId     = null;    // comment id being replied to
+  let _replyToNick   = null;
+  let _emojiRowOpen  = true;
+
+  function openComments(reelId) {
+    currentReelId = reelId;
+    _replyToId = null;
+    _replyToNick = null;
+
+    // Set user avatar in input row
+    const myAv = document.getElementById('comment-my-avatar');
+    if (currentUser.avatar) {
+      const avImg = new Image();
+      avImg.alt = '';
+      avImg.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%;opacity:0;transition:opacity 0.3s';
+      avImg.onload  = () => { avImg.style.opacity = '1'; };
+      avImg.onerror = () => { myAv.textContent = '👤'; };
+      avImg.src = currentUser.avatar;
+      myAv.textContent = '';
+      myAv.appendChild(avImg);
+    } else {
+      myAv.textContent = '👤';
+    }
+
+    renderComments(reelId);
+    document.getElementById('comment-modal').classList.remove('hidden');
+    document.getElementById('comment-reply-bar').classList.add('hidden');
+    setTimeout(() => document.getElementById('comment-input').focus(), 280);
+  }
+
+  function closeComments() {
+    document.getElementById('comment-modal').classList.add('hidden');
+    document.getElementById('comment-reply-bar').classList.add('hidden');
+    document.getElementById('comment-input').value = '';
+    document.getElementById('comment-send-btn').classList.remove('ready');
+    currentReelId = null;
+    _replyToId = null;
+  }
+
+  function setCommentSort(mode) {
+    _commentSort = mode;
+    document.getElementById('sort-btn-top').classList.toggle('active', mode === 'top');
+    document.getElementById('sort-btn-new').classList.toggle('active', mode === 'new');
+    renderComments(currentReelId);
+  }
+
+  function onCommentInput(el) {
+    const hasText = el.value.trim().length > 0;
+    document.getElementById('comment-send-btn').classList.toggle('ready', hasText);
+  }
+
+  function toggleEmojiRow() {
+    _emojiRowOpen = !_emojiRowOpen;
+    document.getElementById('comment-emoji-row').style.display = _emojiRowOpen ? '' : 'none';
+  }
+
+  function insertEmoji(emoji) {
+    const input = document.getElementById('comment-input');
+    const pos   = input.selectionStart || input.value.length;
+    input.value = input.value.slice(0, pos) + emoji + input.value.slice(pos);
+    input.focus();
+    input.setSelectionRange(pos + emoji.length, pos + emoji.length);
+    onCommentInput(input);
+  }
+
+  function startReply(commentId, nickname) {
+    _replyToId   = commentId;
+    _replyToNick = nickname;
+    document.getElementById('comment-reply-name').textContent = '@' + nickname;
+    document.getElementById('comment-reply-bar').classList.remove('hidden');
+    const input = document.getElementById('comment-input');
+    input.placeholder = `Reply to @${nickname}…`;
+    input.focus();
+  }
+
+  function cancelReply() {
+    _replyToId   = null;
+    _replyToNick = null;
+    document.getElementById('comment-reply-bar').classList.add('hidden');
+    document.getElementById('comment-input').placeholder = 'Add a comment…';
+  }
+
+  function renderComments(reelId) {
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === reelId);
+    const list  = document.getElementById('comment-list');
+    list.innerHTML = '';
+
+    const allComments = (reel && reel.comments) ? reel.comments : [];
+    // Separate top-level and replies
+    const topLevel = allComments.filter(c => !c.parentId);
+    const replies   = allComments.filter(c =>  c.parentId);
+
+    // Update header count
+    const countEl = document.getElementById('comment-count');
+    if (countEl) countEl.textContent = allComments.length === 0 ? 'No comments yet'
+      : allComments.length === 1 ? '1 comment' : `${allComments.length} comments`;
+
+    if (topLevel.length === 0) {
+      list.innerHTML = `
+        <div class="comment-empty">
+          <div class="comment-empty-icon">💬</div>
+          <p>No comments yet</p>
+          <span>Be the first to comment!</span>
+        </div>`;
+      return;
+    }
+
+    // Sort
+    const sorted = [...topLevel].sort((a, b) => {
+      if (_commentSort === 'top') return ((b.likes||0) - (a.likes||0)) || (b.createdAt||0) - (a.createdAt||0);
+      return (b.createdAt||0) - (a.createdAt||0);
+    });
+
+    sorted.forEach(c => {
+      const myReplies = replies.filter(r => r.parentId === c.id);
+      list.appendChild(buildCommentEl(c, reel, false));
+      // Replies toggle
+      if (myReplies.length > 0) {
+        const toggle = document.createElement('button');
+        toggle.className = 'comment-replies-toggle';
+        toggle.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+          ${myReplies.length} ${myReplies.length === 1 ? 'reply' : 'replies'}`;
+        toggle.onclick = () => toggleReplies(toggle, myReplies, reel);
+        list.appendChild(toggle);
+      }
+    });
+  }
+
+  function toggleReplies(toggleBtn, replies, reel) {
+    const existing = toggleBtn.nextElementSibling;
+    if (existing && existing.classList.contains('comment-replies-wrap')) {
+      existing.remove();
+      toggleBtn.classList.remove('open');
+      toggleBtn.querySelector('svg').style.transform = '';
+    } else {
+      toggleBtn.classList.add('open');
+      const wrap = document.createElement('div');
+      wrap.className = 'comment-replies-wrap';
+      replies.forEach(r => wrap.appendChild(buildCommentEl(r, reel, true)));
+      toggleBtn.after(wrap);
+    }
+  }
+
+  function buildCommentEl(c, reel, isReply) {
+    const isOwner   = c.email === (reel && reel.email);
+    const isMine    = c.email === currentUser.email;
+    const likedBy   = c.likedBy || [];
+    const hasLiked  = likedBy.includes(currentUser.email);
+    const timeStr   = formatCommentTime(c.createdAt);
+
+    const el = document.createElement('div');
+    el.className = 'comment-item' + (isReply ? ' is-reply' : '');
+    el.dataset.id = c.id;
+
+    el.innerHTML = `
+      <div class="comment-avatar${isReply ? ' small' : ''}">
+        ${c.avatar
+          ? `<img src="${c.avatar}" alt="" loading="lazy"
+               onload="this.classList.add('loaded');this.style.opacity=1"
+               onerror="this.style.display='none';this.insertAdjacentHTML('afterend','<span>👤</span>')">`
+          : '👤'}
+      </div>
+      <div class="comment-body">
+        <div class="comment-meta">
+          <span class="comment-nickname">${escapeHTML(c.nickname)}</span>
+          ${isOwner ? '<span class="comment-owner-badge">Creator</span>' : ''}
+        </div>
+        <div class="comment-text">${formatCommentText(c.text)}</div>
+        <div class="comment-actions-row">
+          <span class="comment-time">${timeStr}</span>
+          <button class="comment-like-btn ${hasLiked ? 'liked' : ''}" onclick="likeComment('${c.id}', this)">
+            <svg viewBox="0 0 24 24" fill="${hasLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+              <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+            </svg>
+            ${(c.likes||0) > 0 ? (c.likes||0) : ''}
+          </button>
+          ${!isReply ? `<button class="comment-reply-btn" onclick="startReply('${c.id}','${escapeHTML(c.nickname)}')">Reply</button>` : ''}
+          ${isMine ? `<button class="comment-delete-btn" onclick="deleteComment('${c.id}')">Delete</button>` : ''}
+        </div>
+      </div>`;
+    return el;
+  }
+
+  function formatCommentText(text) {
+    // Highlight @mentions and make them tappable
+    return escapeHTML(text).replace(/@(\w+)/g, '<span class="mention">@$1</span>');
+  }
+
+  function formatCommentTime(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    const s = Math.floor(diff / 1000);
+    if (s < 60)  return 'just now';
+    const m = Math.floor(s / 60);
+    if (m < 60)  return `${m}m ago`;
+    const h = Math.floor(m / 60);
+    if (h < 24)  return `${h}h ago`;
+    const d = Math.floor(h / 24);
+    if (d < 7)   return `${d}d ago`;
+    return new Date(ts).toLocaleDateString([], {month:'short', day:'numeric'});
+  }
+
+  function postComment() {
+    const input = document.getElementById('comment-input');
+    const text  = input.value.trim();
+    if (!text || !currentReelId) return;
+
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === currentReelId);
+    if (!reel) return;
+    if (!reel.comments) reel.comments = [];
+
+    const commentId = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const newComment = {
+      id:        commentId,
+      parentId:  _replyToId || null,
+      email:     currentUser.email,
+      nickname:  currentUser.nickname,
+      avatar:    currentUser.avatar || '',
+      text,
+      likes:     0,
+      likedBy:   [],
+      createdAt: Date.now()
+    };
+
+    reel.comments.push(newComment);
+    saveReels(reels);
+
+    // Notify post owner (not if commenting on own post)
+    if (reel.email && reel.email !== currentUser.email && typeof addNotification === 'function') {
+      var _cmtAvatar = (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '';
+      var _cmtNick   = currentUser.nickname || currentUser.email.split('@')[0];
+      addNotification(reel.email, {
+        id:           'n_comment_' + commentId,
+        type:         'comment',
+        reelId:       currentReelId,
+        commentText:  text.slice(0, 80),
+        fromEmail:    currentUser.email,
+        fromNickname: _cmtNick,
+        fromAvatar:   _cmtAvatar,
+        message:      _cmtNick + ' commented: ' + text.slice(0, 60) + (text.length > 60 ? '…' : ''),
+        timestamp:    Date.now(),
+        read:         false
+      });
+    }
+
+    // ── Supabase: insert comment to dedicated table ─────────
+    if (window.sb) {
+      window.sb.from('punahub_comments').insert({
+        id: commentId,
+        reel_id: currentReelId,
+        parent_id: _replyToId || null,
+        user_email: currentUser.email,
+        user_nickname: currentUser.nickname || '',
+        user_avatar: currentUser.avatar || '',
+        text: text,
+        likes: 0,
+        liked_by: [],
+        created_at: new Date().toISOString()
+      }).then(function(res) {
+        if (res.error) console.warn('[punaHub] comment insert error:', res.error.message);
+        else console.log('[punaHub] comment saved to Supabase');
+      });
+    }
+
+    // Reset input
+    input.value = '';
+    onCommentInput(input);
+    cancelReply();
+
+    // Re-render
+    renderComments(currentReelId);
+
+    // Live-update comment count on the feed card immediately — no reload needed
+    const allCount = reel.comments.length;
+    const cmtBtn = document.querySelector(`.reel-card[data-id="${currentReelId}"] [data-action="comment"]`);
+    if (cmtBtn) {
+      const countEl = cmtBtn.querySelector('span');
+      if (countEl) {
+        countEl.textContent = formatNum(allCount);
+        countEl.style.transition = 'transform 0.2s, color 0.2s';
+        countEl.style.transform = 'scale(1.5)';
+        countEl.style.color = '#42f5d5';
+        setTimeout(function(){ countEl.style.transform = ''; countEl.style.color = ''; }, 260);
+      }
+    }
+
+    // Scroll to bottom if top-level comment
+    if (!newComment.parentId) {
+      setTimeout(() => {
+        const list = document.getElementById('comment-list');
+        list.scrollTop = list.scrollHeight;
+      }, 80);
+    }
+  }
+
+  function likeComment(commentId, btn) {
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === currentReelId);
+    if (!reel || !reel.comments) return;
+    const comment = reel.comments.find(c => c.id === commentId);
+    if (!comment) return;
+
+    if (!comment.likedBy) comment.likedBy = [];
+    const idx = comment.likedBy.indexOf(currentUser.email);
+    const nowLiked = idx === -1;
+    if (nowLiked) {
+      comment.likedBy.push(currentUser.email);
+      comment.likes = (comment.likes || 0) + 1;
+    } else {
+      comment.likedBy.splice(idx, 1);
+      comment.likes = Math.max(0, (comment.likes || 1) - 1);
+    }
+
+    // Update button UI directly
+    btn.classList.toggle('liked', nowLiked);
+    const svg = btn.querySelector('svg');
+    if (svg) svg.setAttribute('fill', nowLiked ? 'currentColor' : 'none');
+    // Update count text node
+    const countSpan = btn.querySelector('.like-count');
+    if (countSpan) {
+      countSpan.textContent = comment.likes > 0 ? comment.likes : '';
+    } else {
+      // Fallback: rebuild button innerHTML cleanly
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="${nowLiked ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2">
+          <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+        </svg><span class="like-count">${comment.likes > 0 ? comment.likes : ''}</span>`;
+    }
+
+    // Animate
+    btn.style.transform = 'scale(1.3)';
+    setTimeout(() => btn.style.transform = '', 200);
+
+    saveReels(reels);
+
+    // ── Supabase: update comment likes in dedicated table ───
+    if (window.sb) {
+      window.sb.from('punahub_comments').update({
+        likes: comment.likes,
+        liked_by: comment.likedBy
+      }).eq('id', commentId).then(function(res) {
+        if (res.error) console.warn('[punaHub] comment like update error:', res.error.message);
+      });
+    }
+  }
+
+  function deleteComment(commentId) {
+    const reels = getReels();
+    const reel  = reels.find(r => r.id === currentReelId);
+
+    let toDelete = [commentId];
+    if (reel && reel.comments) {
+      const replyIds = reel.comments.filter(c => c.parentId === commentId).map(c => c.id);
+      toDelete = [commentId, ...replyIds];
+      reel.comments = reel.comments.filter(c => c.id !== commentId && c.parentId !== commentId);
+      saveReels(reels);
+      renderComments(currentReelId);
+      const allCount = reel.comments.length;
+      const countEl = document.querySelector(`.reel-card[data-id="${currentReelId}"] .reel-action-btn:nth-child(2) span`);
+      if (countEl) countEl.textContent = formatNum(allCount);
+    }
+
+    // Always delete from Supabase regardless of local state
+    if (window.sb) {
+      window.sb.from('punahub_comments').delete().eq('parent_id', commentId)
+        .then(function(res) { if (res.error) console.warn('[punaHub] reply delete:', res.error.message); });
+      window.sb.from('punahub_comments').delete().eq('id', commentId)
+        .then(function(res) {
+          if (res.error) console.warn('[punaHub] comment delete:', res.error.message);
+          else console.log('[punaHub] comment deleted:', commentId);
+        });
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  UPLOAD
+  // ══════════════════════════════════════════════════════
+  var _reelIsPrivate = false;
+  function toggleReelPrivacy() {
+    _reelIsPrivate = !_reelIsPrivate;
+    var tog = document.getElementById('reel-privacy-toggle');
+    var lbl = document.getElementById('reel-privacy-label');
+    var sub = document.getElementById('reel-privacy-sub');
+    if (_reelIsPrivate) {
+      tog.classList.remove('active');
+      lbl.textContent = '🔒 Private';
+      sub.textContent = 'Only you can see this reel';
+    } else {
+      tog.classList.add('active');
+      lbl.textContent = '🌍 Public';
+      sub.textContent = 'Everyone can see this reel';
+    }
+  }
+
+  function openUpload() {
+    videoFile = null;
+    _reelIsPrivate = false;
+    var tog = document.getElementById('reel-privacy-toggle');
+    var lbl = document.getElementById('reel-privacy-label');
+    var sub = document.getElementById('reel-privacy-sub');
+    if (tog) tog.classList.add('active');
+    if (lbl) lbl.textContent = '🌍 Public';
+    if (sub) sub.textContent = 'Everyone can see this reel';
+    document.getElementById('reel-title').value = '';
+    document.getElementById('reel-desc').value = '';
+    document.getElementById('upload-preview-video').classList.add('hidden');
+    document.getElementById('upload-preview-video').src = '';
+    document.getElementById('upload-drop').querySelector('p').textContent = 'Tap to choose a video';
+    document.getElementById('upload-msg').textContent = '';
+    document.getElementById('upload-modal').classList.remove('hidden');
+  }
+  function closeUpload() {
+    document.getElementById('upload-modal').classList.add('hidden');
+    const vid = document.getElementById('upload-preview-video');
+    if (vid) { vid.pause(); vid.src = ''; }
+    document.getElementById('upload-seek-wrap').classList.add('hidden');
+    videoFile = null;
+  }
+  // ── Upload video seek slider state ─────────────────────
+  let _uploadSeeking = false;
+
+  function fmtTime(s) {
+    s = Math.floor(s || 0);
+    const m = Math.floor(s / 60), sec = s % 60;
+    return m + ':' + String(sec).padStart(2,'0');
+  }
+
+  function updateUploadSlider() {
+    const vid = document.getElementById('upload-preview-video');
+    const slider = document.getElementById('upload-seek-slider');
+    if (!vid || !slider || _uploadSeeking) return;
+    const pct = vid.duration ? (vid.currentTime / vid.duration) * 100 : 0;
+    slider.value = pct;
+    slider.style.setProperty('--pct', pct + '%');
+    document.getElementById('upload-time-current').textContent = fmtTime(vid.currentTime);
+    document.getElementById('upload-time-total').textContent   = fmtTime(vid.duration);
+  }
+
+  function onUploadSeek(val) {
+    const vid = document.getElementById('upload-preview-video');
+    if (!vid || !vid.duration) return;
+    vid.currentTime = (val / 100) * vid.duration;
+    document.getElementById('upload-seek-slider').style.setProperty('--pct', val + '%');
+    document.getElementById('upload-time-current').textContent = fmtTime(vid.currentTime);
+  }
+
+  function uploadSeekStart() { _uploadSeeking = true; }
+  function uploadSeekEnd()   { _uploadSeeking = false; updateUploadSlider(); }
+
+  function toggleUploadPlay() {
+    const vid = document.getElementById('upload-preview-video');
+    if (!vid) return;
+    if (vid.paused) {
+      vid.play();
+      document.getElementById('upload-play-icon').classList.add('hidden');
+      document.getElementById('upload-pause-icon').classList.remove('hidden');
+    } else {
+      vid.pause();
+      document.getElementById('upload-play-icon').classList.remove('hidden');
+      document.getElementById('upload-pause-icon').classList.add('hidden');
+    }
+  }
+
+  function onVideoSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 200 * 1024 * 1024) {
+      document.getElementById('upload-msg').className = 'message error';
+      document.getElementById('upload-msg').textContent = 'Video too large (max 200MB per upload)';
+      return;
+    }
+    videoFile = file;
+    const url = URL.createObjectURL(file);
+    const vid  = document.getElementById('upload-preview-video');
+    vid.src = url;
+    vid.classList.remove('hidden');
+
+    // Reset seek slider
+    const seekWrap = document.getElementById('upload-seek-wrap');
+    const slider   = document.getElementById('upload-seek-slider');
+    slider.value = 0;
+    slider.style.setProperty('--pct', '0%');
+    document.getElementById('upload-time-current').textContent = '0:00';
+    document.getElementById('upload-time-total').textContent   = '0:00';
+    document.getElementById('upload-play-icon').classList.remove('hidden');
+    document.getElementById('upload-pause-icon').classList.add('hidden');
+
+    // Show seek slider centered after video loads
+    vid.onloadedmetadata = () => {
+      document.getElementById('upload-time-total').textContent = fmtTime(vid.duration);
+      seekWrap.classList.remove('hidden');
+      // Scroll the modal so slider is visible & centered
+      setTimeout(() => {
+        seekWrap.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    };
+
+    // Sync slider while playing
+    vid.ontimeupdate = updateUploadSlider;
+    vid.onended = () => {
+      document.getElementById('upload-play-icon').classList.remove('hidden');
+      document.getElementById('upload-pause-icon').classList.add('hidden');
+    };
+
+    document.getElementById('upload-drop').querySelector('p').textContent = '✅ ' + file.name;
+    e.target.value = '';
+  }
+  async function submitReel() {
+    const title = document.getElementById('reel-title').value.trim();
+    const desc  = document.getElementById('reel-desc').value.trim();
+    const msgEl = document.getElementById('upload-msg');
+
+    if (!videoFile) { msgEl.className='message error'; msgEl.textContent='Please choose a video first.'; return; }
+    if (!title)     { msgEl.className='message error'; msgEl.textContent='Please add a title.'; return; }
+
+    // ── Show centered progress overlay ──────────────────
+    function showProgress(step, pct) {
+      var ov  = document.getElementById('upload-progress-overlay');
+      var bar = document.getElementById('upl-bar');
+      var lbl = document.getElementById('upl-step');
+      var pctEl = document.getElementById('upl-pct');
+      if (!ov) return;
+      ov.style.display = 'flex';
+      if (lbl)  lbl.textContent  = step;
+      if (bar)  bar.style.width  = pct + '%';
+      if (pctEl) pctEl.textContent = pct + '%';
+    }
+    function hideProgress() {
+      var ov = document.getElementById('upload-progress-overlay');
+      if (ov) ov.style.display = 'none';
+    }
+
+    showProgress('Preparing…', 5);
+    msgEl.className = 'message';
+    msgEl.textContent = '';
+
+    try {
+      const reelId  = 'reel_' + Date.now();
+      let videoURL  = '';
+      let posterURL = '';
+
+      const useCloudinary = window.CLOUDINARY_CLOUD && window.CLOUDINARY_PRESET && window.CLOUDINARY_PRESET !== 'PASTE_PRESET_NAME';
+
+      // ── Option A: Cloudinary ──────────────────────────
+      if (useCloudinary) {
+        showProgress('⬆️ Uploading video…', 15);
+
+        await new Promise(function(resolve, reject) {
+          var xhr = new XMLHttpRequest();
+          var form = new FormData();
+          form.append('file', videoFile);
+          form.append('upload_preset', window.CLOUDINARY_PRESET);
+          form.append('folder', 'punahub/reels');
+          form.append('public_id', reelId);
+          form.append('resource_type', 'video');
+
+          xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+              var pct = Math.round((e.loaded / e.total) * 70) + 15; // 15→85%
+              showProgress('⬆️ Uploading video… ' + Math.round((e.loaded/e.total)*100) + '%', pct);
+            }
+          };
+          xhr.onload = function() {
+            var data;
+            try { data = JSON.parse(xhr.responseText); } catch(e) { reject(new Error('Upload failed')); return; }
+            if (data.error) { reject(new Error(data.error.message)); return; }
+            videoURL  = data.secure_url;
+            posterURL = data.secure_url.replace('/upload/','/upload/w_180,h_320,c_fill,so_0.5/').replace(/\.\w+$/,'.jpg');
+            resolve();
+          };
+          xhr.onerror = function() { reject(new Error('Network error during upload')); };
+          xhr.open('POST', 'https://api.cloudinary.com/v1_1/' + window.CLOUDINARY_CLOUD + '/video/upload');
+          xhr.send(form);
+        });
+
+        showProgress('✅ Video uploaded!', 90);
+
+      } else {
+        // ── Option B: Supabase ────────────────────────────
+        showProgress('⚙️ Preparing storage…', 10);
+        const sbClient = window.sb || sb;
+        try {
+          await sbClient.storage.createBucket('punahub', { public: true });
+        } catch(e) { /* bucket likely already exists */ }
+
+        showProgress('⬆️ Uploading video…', 20);
+        const { error: uploadErr } = await sbClient.storage
+          .from('punahub')
+          .upload('reels/' + reelId + '.mp4', videoFile, { upsert: true, contentType: videoFile.type || 'video/mp4' });
+
+        if (uploadErr) {
+          if (uploadErr.message && (uploadErr.message.includes('Bucket not found') || uploadErr.message.includes('bucket') || uploadErr.message.includes('fetch'))) {
+            throw new Error('Supabase storage bucket "punahub" not found. Please set your Cloudinary preset or create the bucket in Supabase Dashboard → Storage.');
+          }
+          throw new Error(uploadErr.message);
+        }
+
+        showProgress('⬆️ Video saved!', 65);
+        const { data: pubData } = sbClient.storage.from('punahub').getPublicUrl('reels/' + reelId + '.mp4');
+        videoURL = pubData.publicUrl;
+
+        showProgress('🖼️ Generating thumbnail…', 75);
+        posterURL = await new Promise(res => {
+          const tempURL = URL.createObjectURL(videoFile);
+          const vid = document.createElement('video');
+          vid.src = tempURL; vid.muted = true; vid.currentTime = 0.5;
+          vid.onloadeddata = () => {
+            const cvs = document.createElement('canvas');
+            cvs.width = 180; cvs.height = 320;
+            cvs.getContext('2d').drawImage(vid, 0, 0, 180, 320);
+            cvs.toBlob(async blob => {
+              URL.revokeObjectURL(tempURL);
+              if (blob) {
+                try {
+                  await sbClient.storage.from('punahub').upload('posters/' + reelId + '.jpg', blob, { upsert: true, contentType: 'image/jpeg' });
+                  const { data: pd } = sbClient.storage.from('punahub').getPublicUrl('posters/' + reelId + '.jpg');
+                  res(pd.publicUrl);
+                } catch(e) { res(''); }
+              } else { res(''); }
+            }, 'image/jpeg', 0.6);
+          };
+          vid.onerror = () => { URL.revokeObjectURL(tempURL); res(''); };
+        });
+        showProgress('✅ Upload complete!', 90);
+      }
+
+      // ── Save reel metadata ──────────────────────────────
+      showProgress('💾 Saving reel…', 95);
+      const newReel = {
+        id:           reelId,
+        email:        currentUser.email,
+        title,
+        description:  desc,
+        videoDataURL: videoURL,
+        storageUrl:   videoURL,
+        poster:       posterURL,
+        likes:        0,
+        likedBy:      [],
+        views:        0,
+        _viewedBy:    [],
+        comments:     [],
+        createdAt:    Date.now(),
+        private:      !!_reelIsPrivate
+      };
+
+      const reels = getReels();
+      reels.push(newReel);
+      saveReels(reels);
+
+      showProgress('🎬 Posted!', 100);
+      setTimeout(function() {
+        hideProgress();
+        closeUpload();
+        showToast('🎬 Reel uploaded successfully!');
+        switchReelTab('feed');
+      }, 700);
+
+    } catch(err) {
+      hideProgress();
+      msgEl.className = 'message error';
+      msgEl.textContent = '❌ ' + err.message;
+      console.error('Upload error:', err);
+    }
+  }
+
+  // ══════════════════════════════════════════════════════
+  //  PROFILE TAB
+  // ══════════════════════════════════════════════════════
+  function renderProfile(user) {
+    if (!user) user = currentUser;
+    const reels = getReels().filter(r => r.email === user.email);
+    const isSelf = user.email === currentUser.email;
+
+    // Back bar
+    var backBar = document.getElementById('profile-back-bar');
+    var backName = document.getElementById('profile-back-name');
+    if (backBar) backBar.style.display = isSelf ? 'none' : 'flex';
+    if (backName) backName.textContent = isSelf ? '' : user.nickname || user.email;
+
+    // Edit / Settings buttons — hide when viewing others
+    var editBtn     = document.getElementById('edit-profile-inline-btn');
+    var settingsBtn = document.getElementById('profile-settings-btn');
+    if (editBtn)     editBtn.style.display     = isSelf ? '' : 'none';
+    if (settingsBtn) settingsBtn.style.display = isSelf ? '' : 'none';
+
+    // Suggested-for-you strip — own profile only
+    var suggestSection = document.getElementById('profile-suggest-section');
+    if (suggestSection) {
+      if (isSelf && typeof window.__renderProfileSuggestions === 'function') {
+        window.__renderProfileSuggestions();
+      } else {
+        suggestSection.style.display = 'none';
+      }
+    }
+
+    // Big avatar
+    setAvatarImg(
+      document.getElementById('profile-avatar-img-big'),
+      document.getElementById('profile-avatar-ph-big'),
+      user.avatar
+    );
+
+    document.getElementById('profile-nickname').textContent = user.nickname;
+    document.getElementById('profile-email').textContent    = user.email;
+    const visibleReelCount = isSelf ? reels.length : reels.filter(function(r){ return !r.private; }).length;
+    document.getElementById('stat-reels').textContent      = visibleReelCount;
+    document.getElementById('stat-followers').textContent  = getFollowers(user.email).length;
+    document.getElementById('stat-following').textContent  = getFollowing(user.email).length;
+
+    // Follow button
+    const pfBtn = document.getElementById('profile-follow-btn');
+    if (!isSelf) {
+      pfBtn.dataset.target = user.email;
+      updateFollowBtn(pfBtn, user.email);
+      pfBtn.classList.remove('hidden');
+    } else {
+      pfBtn.classList.add('hidden');
+    }
+
+    const grid  = document.getElementById('profile-reel-grid');
+    const emptyP= document.getElementById('profile-reel-empty');
+    grid.innerHTML = '';
+
+    if (reels.length === 0) { emptyP.classList.remove('hidden'); return; }
+    emptyP.classList.add('hidden');
+
+    // When viewing someone else's profile, hide their private reels
+    const visibleReels = reels.filter(function(r) {
+      if (!r.private) return true;
+      return isSelf;
+    });
+
+    if (visibleReels.length === 0 && !isSelf) { emptyP.classList.remove('hidden'); return; }
+
+    visibleReels.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).forEach(reel => {
+      const thumb = document.createElement('div');
+      thumb.className = 'profile-reel-thumb';
+      thumb.style.position = 'relative';
+      const lockBadge = (reel.private && isSelf) ? '<div style="position:absolute;top:6px;left:6px;font-size:0.75rem;background:rgba(0,0,0,0.65);border-radius:6px;padding:2px 5px;z-index:4">🔒</div>' : '';
+      thumb.innerHTML = `
+        ${reel.poster ? `<img src="${reel.poster}" alt="" loading="lazy" decoding="async">` : '<div class="thumb-no-img">🎬</div>'}
+        <div class="thumb-date">${formatReelDate(reel.createdAt)}</div>
+        ${lockBadge}
+      `;
+      thumb.onclick = () => { if (reel.private && !isSelf) return; switchReelTab('feed'); scrollToReel(reel.id); };
+      grid.appendChild(thumb);
+    });
+  }
+
+  // ── Always-fresh stat refresh — reads directly from localStorage ──────
+  function refreshProfileStats() {
+    try {
+      var profileEmailEl = document.getElementById('profile-email');
+      // Use the email currently DISPLAYED on the profile page
+      var email = (profileEmailEl && profileEmailEl.textContent && profileEmailEl.textContent.trim() !== '—' && profileEmailEl.textContent.trim() !== '')
+        ? profileEmailEl.textContent.trim()
+        : (typeof currentUser !== 'undefined' && currentUser ? currentUser.email : null);
+      if (!email) return;
+      var fEl = document.getElementById('stat-followers');
+      var gEl = document.getElementById('stat-following');
+      var rEl = document.getElementById('stat-reels');
+      if (fEl) fEl.textContent = getFollowers(email).length;
+      if (gEl) gEl.textContent = getFollowing(email).length;
+      var isSelfRefresh = (typeof currentUser !== 'undefined' && currentUser && email === currentUser.email);
+      var reelCountForStat = getReels().filter(function(r){ return r.email === email && (!r.private || isSelfRefresh); }).length;
+      if (rEl) rEl.textContent = reelCountForStat;
+    } catch(e) {}
+  }
+  window.refreshProfileStats = refreshProfileStats;
+
+  function goBackToMyProfile() {
+    renderProfile(currentUser);
+  }
+  window.goBackToMyProfile = goBackToMyProfile;
+
+  function scrollToReel(reelId) {
+    setTimeout(() => {
+      const card = document.querySelector(`.reel-card[data-id="${reelId}"]`);
+      if (card) card.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  }
+
+  // ── Intersection Observer for lazy video autoplay ────────
+  let _reelObserver = null;
+  function setupReelObserver() {
+    if (_reelObserver) _reelObserver.disconnect();
+    _reelObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        const video = entry.target.querySelector('.reel-video');
+        if (!video) return;
+        if (entry.isIntersecting) {
+          // Lazy-load: only set src when card is visible
+          if (!video.src || video.src === window.location.href) {
+            var lazySrc = video.dataset.src;
+            if (lazySrc) {
+              video.src = lazySrc;
+              video.load();
+            }
+          }
+          video.muted = false;
+          video.play().catch(() => {
+            video.muted = true;
+            video.play().catch(() => {});
+          });
+          var playIcon = entry.target.querySelector('.reel-play-icon');
+          if (playIcon) playIcon.classList.add('hidden');
+        } else {
+          video.pause();
+          // Unload video completely if more than 2 screens away — frees memory + stops network
+          if (Math.abs(entry.boundingClientRect.top) > window.innerHeight * 2) {
+            video.src = '';
+            video.load();
+          }
+        }
+      });
+    }, { threshold: 0.6 });
+
+    document.querySelectorAll('.reel-card').forEach(card => {
+      _reelObserver.observe(card);
+    });
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  FOLLOW SYSTEM  — stored in localStorage as JSON
+  // ════════════════════════════════════════════════════════
+
+  // followData: { [email]: { followers: [email,...], following: [email,...] } }
+  function getFollowData() {
+    var _fd;
+    try { _fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch { _fd = {}; }
+    // ── Auto-clean duplicate emails from every entry ──────────
+    var _dirty = false;
+    Object.keys(_fd).forEach(function(email) {
+      var entry = _fd[email];
+      if (!entry) return;
+      ['followers','following'].forEach(function(key) {
+        if (!Array.isArray(entry[key])) return;
+        var seen = {}, cleaned = entry[key].filter(function(e) {
+          if (seen[e]) { _dirty = true; return false; }
+          seen[e] = true; return true;
+        });
+        if (_dirty) entry[key] = cleaned;
+      });
+    });
+    if (_dirty) {
+      try { localStorage.setItem('punahub_follow', JSON.stringify(_fd)); } catch(e) {}
+    }
+    return _fd;
+  }
+  function saveFollowData(data) {
+    // Immediately update in-memory cache so getFollowData() returns fresh data at once
+    if (window.__sbData) window.__sbData.follows = data;
+    // Auto-sync to Supabase (debounced)
+    if (window.__cloudSync) window.__cloudSync('follows', data);
+    localStorage.setItem('punahub_follow', JSON.stringify(data));
+  }
+  function getFollowers(email) {
+    const d = getFollowData();
+    return (d[email] && d[email].followers) ? d[email].followers : [];
+  }
+  function getFollowing(email) {
+    const d = getFollowData();
+    return (d[email] && d[email].following) ? d[email].following : [];
+  }
+  function isFollowing(followerEmail, targetEmail) {
+    return getFollowing(followerEmail).includes(targetEmail);
+  }
+
+  // Fetch fresh follower profile from Supabase, then push follow notification
+  async function sendFollowNotification(fromEmail, toEmail) {
+    var fromNickname = currentUser.nickname || fromEmail.split('@')[0];
+    var fromAvatar   = '';
+
+    // Try to get fresh data from Supabase (has real URL, not base64)
+    try {
+      if (window.sb) {
+        var result = await window.sb.from('punahub_users').select('data').eq('email', fromEmail).single();
+        if (result && result.data && result.data.data) {
+          var ud = result.data.data;
+          if (ud.nickname) fromNickname = ud.nickname;
+          // Use Supabase Storage URL avatar (not base64)
+          if (ud.avatar && !ud.avatar.startsWith('data:')) fromAvatar = ud.avatar;
+          else if (currentUser.avatar && !currentUser.avatar.startsWith('data:')) fromAvatar = currentUser.avatar;
+        }
+      }
+    } catch(e) {
+      // fallback to currentUser data
+      if (currentUser.avatar && !currentUser.avatar.startsWith('data:')) fromAvatar = currentUser.avatar;
+    }
+
+    var notif = {
+      id:           'n_follow_' + fromEmail.replace(/[^a-z0-9]/gi,'_') + '_' + toEmail.replace(/[^a-z0-9]/gi,'_'),
+      type:         'follow',
+      reelId:       null,
+      fromEmail:    fromEmail,
+      fromNickname: fromNickname,
+      fromAvatar:   fromAvatar,
+      message:      fromNickname + ' started following you',
+      timestamp:    Date.now(),
+      read:         false
+    };
+
+    // Save locally and push to Supabase cloud
+    if (typeof addNotification === 'function') {
+      addNotification(toEmail, notif);
+    }
+  }
+
+  function toggleFollow(targetEmail, silent) {
+    if (targetEmail === currentUser.email) return; // can't follow yourself
+
+    const data = getFollowData();
+    // Ensure entries exist
+    if (!data[currentUser.email]) data[currentUser.email] = { followers: [], following: [] };
+    if (!data[targetEmail])       data[targetEmail]       = { followers: [], following: [] };
+
+    const myFollowing     = data[currentUser.email].following;
+    const theirFollowers  = data[targetEmail].followers;
+
+    const alreadyFollowing = myFollowing.includes(targetEmail);
+
+    if (alreadyFollowing) {
+      // Unfollow
+      data[currentUser.email].following = myFollowing.filter(e => e !== targetEmail);
+      data[targetEmail].followers       = theirFollowers.filter(e => e !== currentUser.email);
+    } else {
+      // Follow — guard against duplicates before pushing
+      if (!data[currentUser.email].following.includes(targetEmail))
+        data[currentUser.email].following.push(targetEmail);
+      if (!data[targetEmail].followers.includes(currentUser.email))
+        data[targetEmail].followers.push(currentUser.email);
+      // 🔔 Notify the followed user — fetch fresh avatar/nickname from Supabase
+      // (skipped when silent — e.g. follows from the suggested-profile strip)
+      if (!silent) sendFollowNotification(currentUser.email, targetEmail);
+    }
+
+    saveFollowData(data);
+
+    // Update all follow buttons for this target in DOM
+    document.querySelectorAll(`.follow-btn[data-target="${targetEmail}"]`).forEach(btn => {
+      updateFollowBtn(btn, targetEmail);
+    });
+
+    showToast(alreadyFollowing ? '✖ Unfollowed' : '✔ Following!');
+
+    // Always refresh the currently-displayed profile stats from fresh localStorage
+    setTimeout(refreshProfileStats, 0);
+  }
+
+  function updateFollowBtn(btn, targetEmail) {
+    const following = isFollowing(currentUser.email, targetEmail);
+    btn.textContent = following ? 'Following' : 'Follow';
+    btn.classList.toggle('following', following);
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  REAL-TIME FOLLOW SYNC — listens for localStorage changes
+  //  from other tabs / devices so counts update without refresh
+  // ════════════════════════════════════════════════════════
+  window.addEventListener('storage', function(e) {
+    if (!currentUser) return;
+    if (e.key === 'punahub_follow') {
+      // Update profile stat counters for whoever is on screen
+      const followersEl = document.getElementById('stat-followers');
+      const followingEl = document.getElementById('stat-following');
+      const profileEmailEl2 = document.getElementById('profile-email');
+      const viewedEmail2 = (profileEmailEl2 && profileEmailEl2.textContent && profileEmailEl2.textContent !== '—')
+        ? profileEmailEl2.textContent.trim() : currentUser.email;
+      if (followersEl) followersEl.textContent = getFollowers(viewedEmail2).length;
+      if (followingEl) followingEl.textContent = getFollowing(viewedEmail2).length;
+
+      // Update all follow buttons currently in DOM
+      document.querySelectorAll('.follow-btn[data-target], .hub-follow-btn[data-target]').forEach(function(btn) {
+        var target = btn.dataset.target;
+        if (!target) return;
+        var nowFollowing = isFollowing(currentUser.email, target);
+        btn.textContent = nowFollowing ? 'Following' : 'Follow';
+        btn.classList.toggle('following', nowFollowing);
+      });
+
+      // Update notification badge for current user
+      if (typeof updateNotifBadge === 'function') updateNotifBadge(currentUser.email);
+    }
+    if (e.key && e.key.startsWith('punahub_notifs_') && currentUser && e.key === 'punahub_notifs_' + currentUser.email) {
+      if (typeof updateNotifBadge === 'function') updateNotifBadge(currentUser.email);
+      // 🔔 Also fire popup for the newest unshown notification (cross-tab support)
+      try {
+        var newList = JSON.parse(e.newValue || '[]');
+        var oldList = JSON.parse(e.oldValue || '[]');
+        var oldIds  = new Set(oldList.map(function(n){ return n.id; }));
+        var fresh   = newList.filter(function(n){ return n && n.id && !oldIds.has(n.id); });
+        if (fresh.length && typeof window.showLiveNotifToast === 'function') {
+          // Only show if not already shown by this tab
+          var notShown = fresh.filter(function(n){ return !window.__punaShownNotifIds || !window.__punaShownNotifIds.has(n.id); });
+          if (notShown.length) {
+            window.showLiveNotifToast(notShown[0], currentUser.email);
+          }
+        }
+      } catch(e2) {}
+    }
+  });
+
+  // ── BroadcastChannel listener: receives notifications sent from OTHER tabs ──
+  // When User B (tab 2) follows User A (tab 1), tab 2 calls addNotification()
+  // which broadcasts via BroadcastChannel. Tab 1 receives it here and shows popup.
+  (function() {
+    try {
+      var _bcListener = new BroadcastChannel('punahub_notifs');
+      _bcListener.onmessage = function(ev) {
+        try {
+          var data = ev.data;
+          if (!data || !data.toEmail || !data.notif) return;
+          var cur = typeof currentUser !== 'undefined' ? currentUser : window.__punaActiveUser;
+          if (!cur || cur.email !== data.toEmail) return; // not for this tab's user
+          var notif = data.notif;
+          // Skip if already shown (showLiveNotifToast wrapper will also guard, but fast-path here)
+          if (window.__punaShownNotifIds && window.__punaShownNotifIds.has(notif.id)) return;
+          // Show popup + shake bell
+          if (typeof window.showLiveNotifToast === 'function') {
+            window.showLiveNotifToast(notif, data.toEmail);
+          } else {
+            // showLiveNotifToast not ready yet — update badge + shake bell manually
+            if (typeof updateNotifBadge === 'function') updateNotifBadge(data.toEmail);
+            if (typeof window._shakeBellOnly === 'function') window._shakeBellOnly();
+          }
+        } catch(e) { console.warn('[punaHub BC]', e); }
+      };
+      window.__punaBCListener = _bcListener;
+    } catch(e) { /* BroadcastChannel not supported */ }
+  })();
+
+  // ── Helpers ────────────────────────────────────────────
+  function formatNum(n) {
+    if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+    if (n >= 1000)    return (n/1000).toFixed(1) + 'K';
+    return String(n);
+  }
+  function formatReelDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    const now = new Date();
+    const diffMs = now - d;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHrs  = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1)  return 'Just now';
+    if (diffMins < 60) return diffMins + 'm ago';
+    if (diffHrs  < 24) return diffHrs  + 'h ago';
+    if (diffDays < 7)  return diffDays + 'd ago';
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: d.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+  }
+  function escapeHTML(str) {
+    return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  INIT
+  // ════════════════════════════════════════════════════════
+  window.addEventListener('DOMContentLoaded', () => {
+    populateDOB();
+    const saved = getSession();
+    if (saved) {
+      // Refresh user data from stored users (in case profile was updated)
+      const users = getUsers();
+      const freshUser = (users && users[saved.email]) ? users[saved.email] : saved;
+      // Sync fresh user back into session
+      setSession(freshUser);
+
+      // Always skip avatar step on auto sign-in — go straight to feed
+      showAutoLoginSplash(freshUser);
+    }
+  });
+
+  function showAutoLoginSplash(user) {
+    // Create a brief "Welcome back" overlay before revealing reel screen
+    const frame = document.getElementById('app-frame') || document.body;
+    const splash = document.createElement('div');
+    splash.id = 'autologin-splash';
+
+    const avatarHtml = user.avatar
+      ? `<img src="${user.avatar}" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:2.5px solid #c9f542;box-shadow:0 0 0 4px rgba(201,245,66,0.15);">`
+      : `<div style="width:72px;height:72px;border-radius:50%;background:#161922;border:2.5px solid #272c38;display:flex;align-items:center;justify-content:center;font-size:2rem;">👤</div>`;
+
+    splash.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px;">
+        ${avatarHtml}
+        <div style="font-family:'DM Serif Display',serif;font-size:1.3rem;color:#fff;text-align:center;line-height:1.3;">
+          Welcome back,<br><span style="color:#c9f542">${user.nickname}</span>
+        </div>
+        <div style="font-family:'DM Sans',system-ui,sans-serif;font-size:0.78rem;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;">Signing you in…</div>
+        <div style="width:36px;height:36px;border-radius:50%;border:3px solid rgba(201,245,66,0.15);border-top-color:#c9f542;animation:autologin-spin 0.8s linear infinite;margin-top:4px;"></div>
+      </div>
+    `;
+    splash.style.cssText = `
+      position:absolute;inset:0;z-index:9999;
+      background:#0d0f14;
+      display:flex;align-items:center;justify-content:center;
+      animation:autologin-fadein 0.35s ease both;
+    `;
+
+    if (!document.getElementById('autologin-style')) {
+      const s = document.createElement('style');
+      s.id = 'autologin-style';
+      s.textContent = `
+        @keyframes autologin-fadein { from{opacity:0;transform:scale(0.97)} to{opacity:1;transform:scale(1)} }
+        @keyframes autologin-fadeout { from{opacity:1;transform:scale(1)} to{opacity:0;transform:scale(1.03)} }
+        @keyframes autologin-spin { to{transform:rotate(360deg)} }
+      `;
+      document.head.appendChild(s);
+    }
+
+    frame.appendChild(splash);
+
+    // After short delay, dismiss splash and go straight to feed
+    setTimeout(() => {
+      splash.style.animation = 'autologin-fadeout 0.4s ease forwards';
+      setTimeout(() => {
+        splash.remove();
+        showWelcome(user);
+      }, 400);
+    }, 1400);
+  }
+// ── PWA Install Prompt ────────────────────────────────────
+let _pwaPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _pwaPrompt = e;
+  // Show a subtle install hint after 30s
+  setTimeout(() => {
+    if (_pwaPrompt && window.__device && window.__device.isMobile) {
+      const hint = document.createElement('div');
+      hint.style.cssText = `position:fixed;bottom:80px;left:50%;transform:translateX(-50%);
+        background:rgba(201,245,66,0.12);border:1px solid rgba(201,245,66,0.3);
+        color:#c9f542;padding:8px 16px;border-radius:20px;font-size:0.78rem;
+        font-family:'DM Sans',sans-serif;z-index:9999;cursor:pointer;
+        backdrop-filter:blur(8px);white-space:nowrap`;
+      hint.textContent = '📲 Add punaHub to Home Screen';
+      hint.onclick = async () => {
+        hint.remove();
+        if (_pwaPrompt) { _pwaPrompt.prompt(); _pwaPrompt = null; }
+      };
+      document.body.appendChild(hint);
+      setTimeout(() => hint.remove && hint.remove(), 8000);
+    }
+  }, 30000);
+});
+/* ── Hub Sheet: Search + Profile ──────────────────────────── */
+(function() {
+
+  function openHubSheet() {
+    const overlay = document.getElementById('hub-sheet-overlay');
+    if (!overlay) return;
+    overlay.classList.add('open');
+    switchHubTab('search');
+    setTimeout(() => {
+      const inp = document.getElementById('hub-search-input');
+      if (inp) inp.focus();
+    }, 340);
+  }
+  window.openHubSheet = openHubSheet;
+
+  function closeHubSheet(e) {
+    if (e && e.target !== document.getElementById('hub-sheet-overlay')) return;
+    const overlay = document.getElementById('hub-sheet-overlay');
+    if (overlay) overlay.classList.remove('open');
+    const inp = document.getElementById('hub-search-input');
+    if (inp) { inp.value = ''; runHubSearch(); }
+  }
+  window.closeHubSheet = closeHubSheet;
+
+  function switchHubTab(tab) {
+    if (tab === 'profile') {
+      // Close the sheet and go straight to the profile page
+      document.getElementById('hub-sheet-overlay').classList.remove('open');
+      if (typeof switchReelTab === 'function') switchReelTab('profile');
+      return;
+    }
+    document.getElementById('hub-tab-search').classList.add('active');
+    document.getElementById('hub-tab-profile').classList.remove('active');
+    document.getElementById('hub-panel-search').style.display  = '';
+    document.getElementById('hub-panel-profile').style.display = 'none';
+  }
+  window.switchHubTab = switchHubTab;
+
+  /* ─ Search ─ */
+  function runHubSearch() {
+    const q = (document.getElementById('hub-search-input').value || '').trim().toLowerCase();
+    const container = document.getElementById('hub-search-results');
+    if (!q) {
+      container.innerHTML = '<p class="hub-search-empty">Start typing to find people</p>';
+      return;
+    }
+    const users = typeof getUsers === 'function' ? getUsers() : {};
+    const matches = Object.entries(users).filter(([email, u]) => {
+      return (u.nickname||'').toLowerCase().includes(q) || email.toLowerCase().includes(q);
+    });
+    if (!matches.length) {
+      container.innerHTML = '<p class="hub-search-empty">No results for &ldquo;' + q + '&rdquo;</p>';
+      return;
+    }
+    container.innerHTML = matches.slice(0, 20).map(([email, u]) => {
+      const avatarHtml = u.avatar
+        ? `<img src="${u.avatar}" alt="" />`
+        : (u.nickname ? u.nickname[0].toUpperCase() : '?');
+      const isSelf = typeof currentUser !== 'undefined' && currentUser && email === currentUser.email;
+      const following = !isSelf && typeof isFollowing === 'function' && typeof currentUser !== 'undefined' && currentUser
+        ? isFollowing(currentUser.email, email)
+        : false;
+      const followBtnHtml = !isSelf
+        ? `<button class="hub-follow-btn ${following ? 'following' : ''}" data-target="${email}" onclick="event.stopPropagation();hubToggleFollow('${email}',this)">${following ? 'Following' : 'Follow'}</button>`
+        : '';
+      return `<div class="hub-user-row" onclick="hubGoProfile('${email}')">
+        <div class="hub-user-avatar">${avatarHtml}</div>
+        <div class="hub-user-info">
+          <div class="hub-user-name">${u.nickname || email}</div>
+          <div class="hub-user-handle">${email}</div>
+        </div>
+        ${followBtnHtml}
+      </div>`;
+    }).join('');
+  }
+  window.runHubSearch = runHubSearch;
+
+  function hubGoProfile(email) {
+    // Close the hub sheet
+    var sheet = document.getElementById('hub-sheet-overlay');
+    if (sheet) sheet.classList.remove('open');
+
+    // Look up the user
+    var users = typeof getUsers === 'function' ? getUsers() : {};
+    var u = users[email];
+    if (!u) { if (typeof showToast === 'function') showToast('User not found'); return; }
+
+    var profileUser = Object.assign({ email: email }, u);
+
+    // Switch to profile tab without triggering default currentUser render
+    if (typeof switchReelTab === 'function') switchReelTab('profile', true);
+
+    // Render the searched user's profile + fix topbar padding
+    renderProfile(profileUser);
+    requestAnimationFrame(function() {
+      var topbar = document.querySelector('.reel-topbar');
+      var profileTab = document.getElementById('profile-tab');
+      if (topbar && profileTab) {
+        var h = topbar.getBoundingClientRect().height;
+        if (h > 0) profileTab.style.paddingTop = (h + 10) + 'px';
+      }
+    });
+  }
+  window.hubGoProfile = hubGoProfile;
+
+  /* ─ Follow from hub search ─ */
+  function hubToggleFollow(targetEmail, btn) {
+    if (typeof currentUser === 'undefined' || !currentUser) return;
+    if (targetEmail === currentUser.email) return;
+
+    const data = typeof getFollowData === 'function' ? getFollowData() : {};
+    if (!data[currentUser.email]) data[currentUser.email] = { followers: [], following: [] };
+    if (!data[targetEmail])       data[targetEmail]       = { followers: [], following: [] };
+
+    const myFollowing    = data[currentUser.email].following;
+    const theirFollowers = data[targetEmail].followers;
+    const alreadyFollowing = myFollowing.includes(targetEmail);
+
+    if (alreadyFollowing) {
+      data[currentUser.email].following = myFollowing.filter(e => e !== targetEmail);
+      data[targetEmail].followers       = theirFollowers.filter(e => e !== currentUser.email);
+    } else {
+      if (!data[currentUser.email].following.includes(targetEmail))
+        data[currentUser.email].following.push(targetEmail);
+      if (!data[targetEmail].followers.includes(currentUser.email))
+        data[targetEmail].followers.push(currentUser.email);
+      addNotification(targetEmail, {
+        type: 'follow',
+        fromEmail: currentUser.email,
+        fromNickname: currentUser.nickname,
+        fromAvatar: (currentUser.avatar && !currentUser.avatar.startsWith('data:')) ? currentUser.avatar : '',
+        message: currentUser.nickname + ' started following you',
+        timestamp: Date.now()
+      });
+    }
+
+    if (typeof saveFollowData === 'function') saveFollowData(data);
+
+    // ── Determine final state from freshly-saved localStorage (not __sbData which may lag) ──
+    var finalFollowing = !alreadyFollowing;
+
+    // ── Update ALL matching buttons immediately using ground-truth state ──
+    document.querySelectorAll('.follow-btn[data-target="' + targetEmail + '"], .hub-follow-btn[data-target="' + targetEmail + '"]').forEach(function(b) {
+      b.textContent = finalFollowing ? 'Following' : 'Follow';
+      b.classList.toggle('following', finalFollowing);
+      // ── Lock: stamp the confirmed state so the 300ms poll won't revert it ──
+      b.dataset.lockedFollowing = finalFollowing ? '1' : '0';
+      b.dataset.lockedUntil = String(Date.now() + 3000);
+    });
+
+    // Live-update profile stat counters for whoever is on screen
+    var followersEl = document.getElementById('stat-followers');
+    var followingEl = document.getElementById('stat-following');
+    var profileEmailElHub = document.getElementById('profile-email');
+    var viewedEmailHub = (profileEmailElHub && profileEmailElHub.textContent && profileEmailElHub.textContent !== '—')
+      ? profileEmailElHub.textContent.trim() : currentUser.email;
+    if (followersEl && typeof getFollowers === 'function') followersEl.textContent = getFollowers(viewedEmailHub).length;
+    if (followingEl && typeof getFollowing === 'function') followingEl.textContent = getFollowing(viewedEmailHub).length;
+
+    if (typeof showToast === 'function') showToast(alreadyFollowing ? '✖ Unfollowed' : '✔ Following!');
+    if (typeof refreshProfileStats === 'function') setTimeout(refreshProfileStats, 0);
+
+    // Re-render search results but immediately restore locked button states afterward
+    runHubSearch();
+    document.querySelectorAll('.hub-follow-btn[data-target="' + targetEmail + '"]').forEach(function(b) {
+      b.textContent = finalFollowing ? 'Following' : 'Follow';
+      b.classList.toggle('following', finalFollowing);
+      b.dataset.lockedFollowing = finalFollowing ? '1' : '0';
+      b.dataset.lockedUntil = String(Date.now() + 3000);
+    });
+  }
+  window.hubToggleFollow = hubToggleFollow;
+
+  /* ─ Notification helpers ─ */
+  function getNotifications(email) {
+    try { return JSON.parse(localStorage.getItem('punahub_notifs_' + email) || '[]'); } catch { return []; }
+  }
+  function saveNotifications(email, notifs) {
+    localStorage.setItem('punahub_notifs_' + email, JSON.stringify(notifs));
+  }
+  function addNotification(toEmail, notif) {
+    // Preserve caller-supplied id (deterministic ids enable proper dedup)
+    const fullNotif = { id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2,6), ...notif };
+    // If notif already has an id use it — spread above would overwrite, fix that:
+    if (notif && notif.id) fullNotif.id = notif.id;
+    const notifs = getNotifications(toEmail);
+    // Dedup: same person + same type + same target (reelId) = always a duplicate
+    // Also block same person+type within 30 seconds regardless of target
+    const isDuplicate = notifs.some(function(n) {
+      if (n.type !== fullNotif.type || n.fromEmail !== fullNotif.fromEmail) return false;
+      // If both reference the same reel/post, always dedup
+      if (fullNotif.reelId && n.reelId && fullNotif.reelId === n.reelId) return true;
+      // Otherwise dedup within 30-second window
+      return Math.abs((fullNotif.timestamp || Date.now()) - (n.timestamp || 0)) < 30000;
+    });
+    if (isDuplicate) return;
+    notifs.unshift(fullNotif);
+    const saved = notifs.slice(0, 50);
+    saveNotifications(toEmail, saved);
+
+    // ── BroadcastChannel: notify ANY tab that has User A open ──────────────
+    // This is the PRIMARY cross-tab delivery method (same browser, different tabs)
+    try {
+      var _bc = new BroadcastChannel('punahub_notifs');
+      _bc.postMessage({ toEmail: toEmail, notif: fullNotif });
+      _bc.close();
+    } catch(_bce) {}
+
+    // ── Synthetic storage event for same-tab listeners ──────────────────────
+    try {
+      var _storageKey = 'punahub_notifs_' + toEmail;
+      window.dispatchEvent(new StorageEvent('storage', {
+        key: _storageKey,
+        oldValue: null,
+        newValue: JSON.stringify(saved),
+        storageArea: localStorage
+      }));
+    } catch(_se) {}
+
+    // ── If this notification is FOR the current user in THIS tab ────────────
+    const cur = typeof currentUser !== 'undefined' ? currentUser : null;
+    if (cur && cur.email === toEmail) {
+      // Seed shown ID so the storage event dispatch below won't fire a second toast
+      if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(fullNotif.id);
+      if (typeof window.showLiveNotifToast === 'function') {
+        window.showLiveNotifToast(fullNotif, toEmail);
+      } else {
+        updateNotifBadge(toEmail);
+      }
+    } else {
+      updateNotifBadge(toEmail);
+    }
+
+    // Push to cloud so OTHER devices receive it instantly via Supabase Realtime
+    if (typeof window.__pushCloudNotif === 'function') {
+      window.__pushCloudNotif(toEmail, fullNotif);
+    }
+  }
+  function updateNotifBadge(email) {
+    if (!email) return;
+    const cur = typeof currentUser !== 'undefined' && currentUser;
+    if (!cur || cur.email !== email) return;
+    const notifs = getNotifications(email);
+    const unread = notifs.filter(function(n){ return !n.read; }).length;
+    const badge = document.getElementById('notif-badge');
+    if (badge) {
+      badge.textContent = unread > 0 ? (unread > 9 ? '9+' : String(unread)) : '';
+      badge.style.display = unread > 0 ? 'inline-flex' : 'none';
+      if (unread > 0) {
+        badge.style.animation = 'none';
+        void badge.offsetWidth;
+        badge.style.animation = 'badgePop 0.4s cubic-bezier(0.36,0.07,0.19,0.97) both';
+      }
+    }
+    // Also shake bell if there are unread notifications
+    if (unread > 0 && typeof window._shakeBellOnly === 'function') {
+      window._shakeBellOnly();
+    }
+  }
+  // Popup card removed — notifications are shown via bell shake + badge count only
+  function showNotifToast(notif) { /* intentionally empty — bell+badge handled in showLiveNotifToast */ }
+
+    window.getNotifications = getNotifications;
+  window.updateNotifBadge = updateNotifBadge;
+
+  function openNotifPanel() {
+    const email = typeof currentUser !== 'undefined' && currentUser ? currentUser.email : null;
+    if (!email) return;
+    // ── Remove any stale panel before (re)creating ─────────
+    var stale = document.getElementById('notif-panel');
+    if (stale) stale.remove();
+    let panel = document.createElement('div');
+    {
+      panel.id = 'notif-panel';
+      panel.style.cssText = 'position:absolute;inset:0;z-index:600;display:flex;flex-direction:column;background:#000;animation:slideUp 0.35s cubic-bezier(0.16,1,0.3,1) both;';
+      panel.innerHTML = '<div class="notif-panel-header" style="display:flex;align-items:center;justify-content:space-between;' +
+        'padding:calc(max(env(safe-area-inset-top,0px),14px) + 8px) 16px 12px;' +
+        'background:rgba(0,0,0,0.85);backdrop-filter:blur(16px);' +
+        'border-bottom:1px solid rgba(255,255,255,0.06);position:sticky;top:0;z-index:2">' +
+        '<span style="font-family:\'DM Serif Display\',serif;font-size:1.1rem;color:#fff">🔔 Notifications</span>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+        
+        '<button id="notif-clear-all-btn" onclick="clearAllNotifications()" style="background:rgba(255,107,107,0.12);border:1px solid rgba(255,107,107,0.25);border-radius:20px;padding:6px 13px;color:#ff6b6b;font-size:0.72rem;font-weight:600;cursor:pointer;font-family:\'DM Sans\',sans-serif;white-space:nowrap;-webkit-tap-highlight-color:transparent">Clear All</button>' +
+        '<button onclick="closeNotifPanel()" style="background:rgba(255,255,255,0.08);border:none;border-radius:50%;width:34px;height:34px;color:#fff;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>' +
+        '</div></div><div id="notif-list" style="flex:1;overflow-y:auto;padding:8px 0;scrollbar-width:none"></div>';
+      (document.getElementById('app-frame') || document.body).appendChild(panel);
+    }
+    const allNotifs = getNotifications(email).map(function(n){ return Object.assign({}, n, {read:true}); });
+    saveNotifications(email, allNotifs);
+    // Show ALL notifications (not just current session)
+    const notifs = allNotifs;
+    const badge = document.getElementById('notif-badge');
+    if (badge) { badge.textContent=''; badge.style.display='none'; }
+
+    const list = panel.querySelector('#notif-list');
+    if (!notifs.length) {
+      list.innerHTML = '<div style="text-align:center;padding:48px 20px;color:#555">' +
+        '<div style="font-size:2.5rem;margin-bottom:12px">🔔</div>' +
+        '<div style="font-size:0.95rem">No notifications yet</div>' +
+        '<div style="font-size:0.78rem;color:#444;margin-top:4px">When someone follows you, you\'ll see it here</div>' +
+
+        '</div>';
+    } else {
+      list.innerHTML = notifs.map(function(n){
+        const av = n.fromAvatar
+          ? '<img src="' + n.fromAvatar + '" style="width:42px;height:42px;border-radius:50%;object-fit:cover;border:2px solid #c9f542;flex-shrink:0">'
+          : '<div style="width:42px;height:42px;border-radius:50%;background:#272c38;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">👤</div>';
+        const ago = formatNotifTime(n.timestamp);
+        const iconMap2 = { follow: '👤', like: '❤️', comment: '💬' };
+        const nIcon = iconMap2[n.type] || '🔔';
+        return '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+          av + '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:0.85rem;color:#e8eaf0;font-weight:600">' + (n.fromNickname || 'Someone') + '</div>' +
+          '<div style="font-size:0.78rem;color:#9ca3af;margin-top:2px">' + (n.message || 'started following you') + '</div>' +
+          '<div style="font-size:0.7rem;color:#4b5563;margin-top:2px">' + ago + '</div>' +
+          '</div><div style="font-size:1.2rem">' + nIcon + '</div></div>';
+      }).join('');
+    }
+  }
+  function closeNotifPanel() {
+    var panel = document.getElementById('notif-panel');
+    if (!panel) return;
+    panel.style.animation = 'slideDown 0.28s cubic-bezier(0.4,0,1,1) forwards';
+    setTimeout(function(){ if (panel.parentNode) panel.remove(); }, 260);
+  }
+  function clearAllNotifications() {
+    const email = typeof currentUser !== 'undefined' && currentUser ? currentUser.email : null;
+    if (!email) return;
+    saveNotifications(email, []);
+    // Reset badge
+    const badge = document.getElementById('notif-badge');
+    if (badge) { badge.textContent = ''; badge.style.display = 'none'; }
+    // Update list inside open panel
+    const list = document.getElementById('notif-list');
+    if (list) {
+      list.innerHTML = '<div style="text-align:center;padding:48px 20px;color:#555">' +
+        '<div style="font-size:2.5rem;margin-bottom:12px">🔔</div>' +
+        '<div style="font-size:0.95rem">No notifications yet</div>' +
+        '<div style="font-size:0.78rem;color:#444;margin-top:4px">When someone follows you, you\'ll see it here</div></div>';
+    }
+    // Hide the clear all button since there's nothing to clear
+    const btn = document.getElementById('notif-clear-all-btn');
+    if (btn) btn.style.display = 'none';
+    // ✅ Fix 2: Also delete from Supabase so records don't come back on next sync
+    if (window.sb) {
+      try {
+        window.sb.from('punahub_notifs').delete().eq('to_email', email)
+          .then(function(){ console.log('[punaHub] ✅ Notifications cleared from Supabase'); })
+          .catch(function(e){ console.warn('[punaHub] Supabase notif clear failed:', e && e.message); });
+      } catch(e) {}
+    }
+    if (typeof showToast === 'function') showToast('🗑 Notifications cleared');
+  }
+  window.openNotifPanel  = openNotifPanel;
+  window.closeNotifPanel = closeNotifPanel;
+  window.clearAllNotifications = clearAllNotifications;
+  window.addNotification = addNotification;   // ✅ Fix 1+3: exposed so toggleLike/Follow/postComment can fire notifications
+  window.showNotifToast  = showNotifToast;    // ✅ Fix 1: exposed so live engine can call the popup
+
+
+
+  // ── Wrapper: open panel + pulse the bell to confirm ──────────
+  window.openNotifPanelWithTest = function() {
+    // Pulse bell icon to show it was tapped
+    var btn = document.getElementById('notif-btn');
+    if (btn) {
+      btn.style.transform = 'scale(1.35)';
+      btn.style.color = '#c9f542';
+      setTimeout(function(){ btn.style.transform = ''; btn.style.color = ''; }, 300);
+    }
+    openNotifPanel();
+  };
+
+  function formatNotifTime(ts) {
+    if (!ts) return '';
+    const diff = Date.now() - ts;
+    const s = Math.floor(diff/1000);
+    if (s < 60) return 'just now';
+    const m = Math.floor(s/60);
+    if (m < 60) return m + 'm ago';
+    const h = Math.floor(m/60);
+    if (h < 24) return h + 'h ago';
+    return Math.floor(h/24) + 'd ago';
+  }
+
+  /* ─ Profile Quick View ─ */
+  function renderHubProfile() {
+    const container = document.getElementById('hub-profile-quick');
+    if (!container) return;
+    const xml = sessionStorage.getItem('currentUser_xml') || '';
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    const emailEl = doc.querySelector('email');
+    if (!emailEl || !emailEl.textContent) {
+      container.innerHTML = '<p class="hub-search-empty">Not logged in</p>';
+      return;
+    }
+    const email = emailEl.textContent;
+    const users = typeof getUsers === 'function' ? getUsers() : {};
+    const u = users[email] || {};
+    const follows = typeof getFollowData === 'function' ? getFollowData() : {};
+    const myFollows = follows[email] || {};
+    const followingCount = Object.values(myFollows).filter(v => v === true).length;
+    const followerCount  = Object.values(follows).filter(f => f[email] === true).length;
+    const reels = typeof getReels === 'function' ? getReels() : [];
+    const myReels = reels.filter(r => r.author === email).length;
+    const avatarHtml = u.avatar
+      ? `<img src="${u.avatar}" alt="" />`
+      : (u.nickname ? u.nickname[0].toUpperCase() : '👤');
+    container.innerHTML = `
+      <div class="hub-profile-header">
+        <div class="hub-profile-avatar-lg">${avatarHtml}</div>
+        <div class="hub-profile-meta">
+          <strong>${u.nickname || email}</strong>
+          <span>${email}</span>
+        </div>
+      </div>
+      <div class="hub-profile-stats-row">
+        <div class="hub-stat-item">
+          <div class="hub-stat-num">${myReels}</div>
+          <div class="hub-stat-lbl">Reels</div>
+        </div>
+        <div class="hub-stat-item">
+          <div class="hub-stat-num">${followerCount}</div>
+          <div class="hub-stat-lbl">Followers</div>
+        </div>
+        <div class="hub-stat-item">
+          <div class="hub-stat-num">${followingCount}</div>
+          <div class="hub-stat-lbl">Following</div>
+        </div>
+      </div>
+      <div class="hub-profile-actions">
+        <button class="hub-profile-btn primary" onclick="document.getElementById('hub-sheet-overlay').classList.remove('open'); if(typeof switchReelTab==='function') switchReelTab('profile');">View Profile</button>
+        <button class="hub-profile-btn" onclick="document.getElementById('hub-sheet-overlay').classList.remove('open'); if(typeof openEditProfile==='function') openEditProfile();">Edit Profile</button>
+      </div>
+    `;
+  }
+
+})();
+// ── Reel Navigation: Touch, Mouse Wheel & Arrow Keys ─────────
+(function() {
+
+  const SNAP_DURATION = 350; // ms for programmatic scroll
+  let _isSnapping    = false;
+  let _touchStartY   = 0;
+  let _touchStartX   = 0;
+  let _lastWheelTime = 0;
+  const WHEEL_COOLDOWN = 600; // ms between wheel snaps
+
+  function getFeed() { return document.getElementById('reel-feed'); }
+
+  // ── Get current reel index (which card is mostly visible) ──
+  function getCurrentIndex(feed) {
+    const cards = feed.querySelectorAll('.reel-card');
+    if (!cards.length) return -1;
+    const feedTop  = feed.getBoundingClientRect().top;
+    const feedH    = feed.clientHeight;
+    let best = 0, bestScore = -Infinity;
+    cards.forEach((c, i) => {
+      const r = c.getBoundingClientRect();
+      const visible = Math.min(r.bottom, feedTop + feedH) - Math.max(r.top, feedTop);
+      if (visible > bestScore) { bestScore = visible; best = i; }
+    });
+    return best;
+  }
+
+  // ── Snap to a reel by index ────────────────────────────────
+  function snapTo(feed, index) {
+    const cards = feed.querySelectorAll('.reel-card');
+    if (!cards.length || index < 0 || index >= cards.length) return;
+    if (_isSnapping) return;
+    _isSnapping = true;
+
+    cards[index].scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    // Show brief nav indicator
+    showNavHint(index, cards.length);
+
+    setTimeout(() => { _isSnapping = false; }, SNAP_DURATION + 100);
+  }
+
+  function goNext(feed) {
+    const i = getCurrentIndex(feed);
+    snapTo(feed, i + 1);
+  }
+
+  function goPrev(feed) {
+    const i = getCurrentIndex(feed);
+    snapTo(feed, i - 1);
+  }
+
+  // ── Nav hint (small pill showing reel N / total) ──────────
+  let _hintEl   = null;
+  let _hintTimer = null;
+  function showNavHint(index, total) {
+    if (!_hintEl) {
+      _hintEl = document.createElement('div');
+      _hintEl.className = 'nav-hint-pill';
+      _hintEl.style.cssText = `
+        position:fixed; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.8);
+        background:rgba(0,0,0,0.65); color:#fff;
+        padding:8px 18px; border-radius:20px;
+        font-family:'DM Sans',system-ui,sans-serif; font-size:0.8rem; font-weight:600;
+        letter-spacing:0.06em; pointer-events:none; z-index:88888;
+        opacity:0; transition:opacity 0.2s, transform 0.2s;
+        backdrop-filter:blur(6px); border:1px solid rgba(255,255,255,0.12);
+      `;
+      const frame = document.getElementById('app-frame') || document.body;
+      frame.appendChild(_hintEl);
+    }
+    _hintEl.textContent = `${index + 1} / ${total}`;
+    _hintEl.style.opacity = '1';
+    _hintEl.style.transform = 'translate(-50%,-50%) scale(1)';
+    clearTimeout(_hintTimer);
+    _hintTimer = setTimeout(() => {
+      if (_hintEl) {
+        _hintEl.style.opacity = '0';
+        _hintEl.style.transform = 'translate(-50%,-50%) scale(0.85)';
+      }
+    }, 900);
+  }
+
+  // ── Arrow key navigation ───────────────────────────────────
+  document.addEventListener('keydown', (e) => {
+    const feed = getFeed();
+    if (!feed || feed.classList.contains('hidden')) return;
+    // Only when reel screen is visible
+    const reelScreen = document.getElementById('reel-screen');
+    if (reelScreen && reelScreen.classList.contains('hidden')) return;
+
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      goNext(feed);
+    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      goPrev(feed);
+    }
+  });
+
+  // ── Mouse wheel navigation ─────────────────────────────────
+  function handleWheel(e) {
+    const feed = getFeed();
+    if (!feed) return;
+    if (!feed.contains(e.target) && e.target !== feed) return;
+
+    // Allow normal scrolling inside the comment list
+    const commentModal = document.getElementById('comment-modal');
+    if (commentModal && !commentModal.classList.contains('hidden')) {
+      const commentList = commentModal.querySelector('.comment-list');
+      if (commentList && (commentList === e.target || commentList.contains(e.target))) {
+        return;
+      }
+    }
+
+    const now = Date.now();
+    if (now - _lastWheelTime < WHEEL_COOLDOWN) return;
+    _lastWheelTime = now;
+
+    e.preventDefault();
+    if (e.deltaY > 0) {
+      goNext(feed);
+    } else if (e.deltaY < 0) {
+      goPrev(feed);
+    }
+  }
+
+  // Use capture + passive:false to intercept wheel on the feed
+  document.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+
+  // ── Touch swipe navigation ─────────────────────────────────
+  let _touchFeed = null;
+  let _touchActive = false;
+
+  document.addEventListener('touchstart', (e) => {
+    const feed = getFeed();
+    if (!feed) return;
+    if (!feed.contains(e.target) && e.target !== feed) return;
+    _touchFeed   = feed;
+    _touchStartY = e.touches[0].clientY;
+    _touchStartX = e.touches[0].clientX;
+    _touchActive = true;
+  }, { passive: true });
+
+  document.addEventListener('touchend', (e) => {
+    if (!_touchActive || !_touchFeed) return;
+    _touchActive = false;
+
+    const dy = _touchStartY - e.changedTouches[0].clientY;
+    const dx = _touchStartX - e.changedTouches[0].clientX;
+
+    // Only handle clearly vertical swipes (more vertical than horizontal)
+    if (Math.abs(dy) < 40 || Math.abs(dy) < Math.abs(dx) * 1.2) return;
+
+    if (dy > 0) {
+      goNext(_touchFeed); // swipe up → next reel
+    } else {
+      goPrev(_touchFeed); // swipe down → prev reel
+    }
+    _touchFeed = null;
+  }, { passive: true });
+
+  // ── Arrow button overlay on reel feed ─────────────────────
+  // Show up/down arrow hints on the side when reel tab is active
+  let _arrowsInjected = false;
+  function injectArrowHints() {
+    if (_arrowsInjected) return;
+    _arrowsInjected = true;
+
+    const frame = document.getElementById('app-frame') || document.body;
+
+    // Up arrow — positioned inside reel-screen on the right
+    const upArrow = document.createElement('button');
+    upArrow.id = 'reel-arrow-up';
+    upArrow.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`;
+    upArrow.style.cssText = `
+      position:absolute;
+      right:6px;
+      top:calc(50% - var(--bottombar-h,64px)/2 - 40px);
+      width:32px; height:32px; border-radius:50%;
+      background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.2);
+      color:#fff; display:flex; align-items:center; justify-content:center;
+      cursor:pointer; z-index:600; backdrop-filter:blur(6px);
+      transition:background 0.2s, transform 0.15s;
+      opacity:0.75; pointer-events:auto;
+      -webkit-tap-highlight-color:transparent;
+    `;
+    upArrow.addEventListener('click', () => { const feed = getFeed(); if (feed) goPrev(feed); });
+    upArrow.addEventListener('touchstart', () => { upArrow.style.transform='scale(0.88)'; upArrow.style.opacity='1'; }, {passive:true});
+    upArrow.addEventListener('touchend',   () => { upArrow.style.transform='scale(1)'; upArrow.style.opacity='0.75'; }, {passive:true});
+
+    // Down arrow
+    const downArrow = document.createElement('button');
+    downArrow.id = 'reel-arrow-down';
+    downArrow.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+    downArrow.style.cssText = `
+      position:absolute;
+      right:6px;
+      top:calc(50% - var(--bottombar-h,64px)/2 + 12px);
+      width:32px; height:32px; border-radius:50%;
+      background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.2);
+      color:#fff; display:flex; align-items:center; justify-content:center;
+      cursor:pointer; z-index:600; backdrop-filter:blur(6px);
+      transition:background 0.2s, transform 0.15s;
+      opacity:0.75; pointer-events:auto;
+      -webkit-tap-highlight-color:transparent;
+    `;
+    downArrow.addEventListener('click', () => { const feed = getFeed(); if (feed) goNext(feed); });
+    downArrow.addEventListener('touchstart', () => { downArrow.style.transform='scale(0.88)'; downArrow.style.opacity='1'; }, {passive:true});
+    downArrow.addEventListener('touchend',   () => { downArrow.style.transform='scale(1)'; downArrow.style.opacity='0.75'; }, {passive:true});
+
+    // Hide old dynamically-injected arrows — new HTML arrows replace them
+    upArrow.style.display   = 'none';
+    downArrow.style.display = 'none';
+    _arrowsInjected = true; // mark done but don't show old ones
+
+    // Sync new HTML scroll arrows visibility based on feed/tab state
+    function syncNewArrows() {
+      const reelScreen = document.getElementById('reel-screen');
+      const feedDiv    = getFeed();
+      const newArrows  = document.getElementById('scroll-arrows');
+      if (!newArrows) return;
+      const onFeed = reelScreen && !reelScreen.classList.contains('hidden')
+                     && feedDiv  && !feedDiv.classList.contains('hidden');
+      newArrows.style.display = onFeed ? 'flex' : 'none';
+    }
+    const obsNew = new MutationObserver(syncNewArrows);
+    const reelScreenNew = document.getElementById('reel-screen');
+    if (reelScreenNew) obsNew.observe(reelScreenNew, { attributes: true, attributeFilter: ['class'] });
+    const feedDivNew = getFeed();
+    if (feedDivNew) obsNew.observe(feedDivNew, { attributes: true, attributeFilter: ['class'] });
+    syncNewArrows();
+
+    const origSwitchNew = window.switchReelTab;
+    if (typeof origSwitchNew === 'function') {
+      window.switchReelTab = function(...args) {
+        origSwitchNew.apply(this, args);
+        setTimeout(syncNewArrows, 80);
+      };
+    }
+  }
+
+  // Wait for DOM ready then inject
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(injectArrowHints, 400));
+  } else {
+    setTimeout(injectArrowHints, 400);
+  }
+
+  // ── Global wrappers for new HTML scroll arrow buttons ─────
+  window.scrollFeedUp   = function() { const f = getFeed(); if (f) goPrev(f); };
+  window.scrollFeedDown = function() { const f = getFeed(); if (f) goNext(f); };
+
+})();
+// ── High Frame Rate Video Engine (90fps support) ─────────────
+(function() {
+
+  // Unlock high-refresh-rate rendering on the page
+  if ('scheduler' in window && window.scheduler.postTask) {
+    window.__videoScheduler = (fn) => window.scheduler.postTask(fn, { priority: 'user-blocking' });
+  } else {
+    window.__videoScheduler = (fn) => fn();
+  }
+
+  function lockVideoToDisplayRefresh(video) {
+    if (!video || video.__fpsLocked) return;
+    video.__fpsLocked = true;
+
+    // Explicit playback rate — prevent any throttling
+    video.playbackRate = 1.0;
+    video.preservesPitch = true;
+    video.defaultPlaybackRate = 1.0;
+
+    // GPU layer hints
+    video.style.willChange = 'transform';
+    video.style.transform = 'translateZ(0)';
+    video.style.webkitTransform = 'translateZ(0)';
+    video.style.backfaceVisibility = 'hidden';
+    video.style.webkitBackfaceVisibility = 'hidden';
+
+    // Fetch priority — Chrome 108+ / Safari 16+
+    if ('fetchPriority' in video) video.fetchPriority = 'high';
+    try { video.setAttribute('fetchpriority', 'high'); } catch(e) {}
+
+    // Keep decoder local — no Chromecast overhead
+    try { video.disableRemotePlayback = true; } catch(e) {}
+
+    // Hint: this video is important — request hardware decoder slot
+    try { video.setAttribute('x-webkit-airplay', 'deny'); } catch(e) {}
+
+    // rVFC: tells browser to render at display Hz (60/90/120), not video-encoded fps
+    if (typeof video.requestVideoFrameCallback === 'function') {
+      let _handle = null;
+      function onFrame() {
+        if (!video.paused && !video.ended)
+          _handle = video.requestVideoFrameCallback(onFrame);
+      }
+      video.addEventListener('play', function() {
+        if (_handle) video.cancelVideoFrameCallback(_handle);
+        _handle = video.requestVideoFrameCallback(onFrame);
+      }, { passive: true });
+      video.addEventListener('pause', function() {
+        if (_handle) { video.cancelVideoFrameCallback(_handle); _handle = null; }
+      }, { passive: true });
+      if (!video.paused) _handle = video.requestVideoFrameCallback(onFrame);
+    }
+  }
+
+  // Apply to all reel videos — current and future
+  function applyToAllVideos() {
+    document.querySelectorAll('.reel-video').forEach(lockVideoToDisplayRefresh);
+  }
+
+  // Watch for new reel cards being added to the DOM
+  const _videoObserver = new MutationObserver((mutations) => {
+    mutations.forEach(m => {
+      m.addedNodes.forEach(node => {
+        if (node.nodeType !== 1) return;
+        // Check if the added node is or contains a reel-video
+        if (node.classList && node.classList.contains('reel-video')) {
+          lockVideoToDisplayRefresh(node);
+        } else {
+          node.querySelectorAll && node.querySelectorAll('.reel-video').forEach(lockVideoToDisplayRefresh);
+        }
+      });
+    });
+  });
+
+  // Prevent background tab throttling — resume full speed on visibility
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      document.querySelectorAll('.reel-video').forEach(v => {
+        if (!v.paused) v.playbackRate = 1.0;
+      });
+    }
+  }, { passive: true });
+
+  // Start observing the feed for new cards
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      const feed = document.getElementById('reel-feed');
+      if (feed) _videoObserver.observe(feed, { childList: true, subtree: true });
+      applyToAllVideos();
+    });
+  } else {
+    const feed = document.getElementById('reel-feed');
+    if (feed) _videoObserver.observe(feed, { childList: true, subtree: true });
+    applyToAllVideos();
+  }
+
+  // Also expose so buildReelCard can call it immediately after creating a video
+  window.__lockVideoFPS = lockVideoToDisplayRefresh;
+
+})();
+// ── Startup: Internet Connection Check ───────────────────────
+(function() {
+  const startupScreen  = document.getElementById('startup-screen');
+  const noInternetScreen = document.getElementById('no-internet-screen');
+  const statusMsg      = document.getElementById('startup-status-msg');
+
+  function setStatus(msg, type) {
+    if (!statusMsg) return;
+    statusMsg.textContent = msg;
+    statusMsg.className = 'startup-status' + (type ? ' ' + type : '');
+  }
+
+  async function checkConnection() {
+    if (noInternetScreen) noInternetScreen.classList.remove('visible');
+    if (startupScreen)    startupScreen.classList.remove('hidden');
+    setStatus('Checking connection…');
+
+    // navigator.onLine = false means definitely offline
+    if (!navigator.onLine) { showNoInternet(); return; }
+
+    // Try multiple endpoints so it works on mobile data, WiFi, any device/region
+    const ENDPOINTS = [
+      'https://hafjrxixytudodnuptky.supabase.co',
+      'https://1.1.1.1',
+      'https://www.google.com/favicon.ico',
+      'https://www.apple.com/favicon.ico',
+      'https://cdn.jsdelivr.net/npm/jquery/dist/jquery.min.js'
+    ];
+
+    async function tryFetch(url) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        await fetch(url, { mode: 'no-cors', cache: 'no-store', signal: ctrl.signal });
+        clearTimeout(t); return true;
+      } catch(e) { clearTimeout(t); return false; }
+    }
+
+    setStatus('Connecting to punaHub…');
+    try {
+      await Promise.any(ENDPOINTS.map(url =>
+        tryFetch(url).then(ok => { if (!ok) throw new Error('failed'); return true; })
+      ));
+      setStatus('Connected! Loading…', 'success');
+      setTimeout(dismissStartup, 700);
+    } catch(err) {
+      showNoInternet();
+    }
+  }
+
+  function showNoInternet() {
+    if (startupScreen)    startupScreen.classList.add('hidden');
+    if (noInternetScreen) noInternetScreen.classList.add('visible');
+  }
+
+  function dismissStartup() {
+    if (startupScreen)    startupScreen.classList.add('hidden');
+    if (noInternetScreen) noInternetScreen.classList.remove('visible');
+  }
+
+  // Expose retry for button
+  window.retryConnection = checkConnection;
+
+  // Listen for online/offline events while app is open
+  window.addEventListener('offline', () => {
+    showNoInternet();
+  });
+  window.addEventListener('online', () => {
+    checkConnection();
+  });
+
+  // Run on load
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkConnection);
+  } else {
+    checkConnection();
+  }
+})();
+(function () {
+  'use strict';
+
+  var _fpMode        = 'followers';
+  var _fpViewedEmail = null;
+  var _fpTimer       = null;
+  var _fpLastHash    = '';
+
+  // ── Open ──────────────────────────────────────────────────
+  window.openFollowPanel = function (mode) {
+    _fpMode = mode || 'followers';
+
+    // Determine whose profile is on screen
+    var peEl = document.getElementById('profile-email');
+    _fpViewedEmail = (peEl && peEl.textContent && peEl.textContent !== '—')
+      ? peEl.textContent.trim()
+      : (typeof currentUser !== 'undefined' && currentUser ? currentUser.email : null);
+    if (!_fpViewedEmail) return;
+
+    var overlay = document.getElementById('follow-panel-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('hidden');
+
+    var search = document.getElementById('follow-panel-search');
+    if (search) search.value = '';
+
+    _syncTabs();
+    renderFollowPanelList();
+
+    clearInterval(_fpTimer);
+    _fpTimer = setInterval(function () { renderFollowPanelList(true); }, 1500);
+  };
+
+  // ── Close ─────────────────────────────────────────────────
+  window.closeFollowPanel = function () {
+    var overlay = document.getElementById('follow-panel-overlay');
+    if (overlay) overlay.classList.add('hidden');
+    clearInterval(_fpTimer);
+    _fpTimer = null;
+    _fpLastHash = '';
+  };
+
+  // ── Switch tab ────────────────────────────────────────────
+  window.switchFollowTab = function (mode) {
+    _fpMode = mode;
+    _syncTabs();
+    var search = document.getElementById('follow-panel-search');
+    if (search) search.value = '';
+    _fpLastHash = '';
+    renderFollowPanelList();
+  };
+
+  function _syncTabs() {
+    var tf = document.getElementById('fp-tab-followers');
+    var tg = document.getElementById('fp-tab-following');
+    if (tf) tf.classList.toggle('active', _fpMode === 'followers');
+    if (tg) tg.classList.toggle('active', _fpMode === 'following');
+  }
+
+  // ── Render list ───────────────────────────────────────────
+  window.renderFollowPanelList = function (silent) {
+    var list = document.getElementById('follow-panel-list');
+    if (!list) return;
+    var cu = (typeof currentUser !== 'undefined') ? currentUser : null;
+    if (!cu || !_fpViewedEmail) return;
+
+    // Get latest follow data
+    var fd = {};
+    try {
+      var sbf = window.__sbData && window.__sbData.follows;
+      fd = (sbf && Object.keys(sbf).length > 0)
+        ? sbf
+        : JSON.parse(localStorage.getItem('punahub_follow') || '{}');
+    } catch (e) { fd = {}; }
+
+    var viewedEntry = fd[_fpViewedEmail] || {};
+    var emailList   = _fpMode === 'followers'
+      ? (viewedEntry.followers || [])
+      : (viewedEntry.following  || []);
+
+    // ── Deduplicate: remove repeated emails ──────────────────
+    var _seenEmails = {};
+    emailList = emailList.filter(function (email) {
+      if (_seenEmails[email]) return false;
+      _seenEmails[email] = true;
+      return true;
+    });
+
+    // Update profile stat numbers live
+    var elF = document.getElementById('stat-followers');
+    var elG = document.getElementById('stat-following');
+    var fLen = (viewedEntry.followers || []).length;
+    var gLen = (viewedEntry.following  || []).length;
+    if (elF && elF.textContent !== String(fLen)) elF.textContent = fLen;
+    if (elG && elG.textContent !== String(gLen)) elG.textContent = gLen;
+
+    // Get user profiles
+    var allUsers = {};
+    try {
+      var sbu = window.__sbData && window.__sbData.users;
+      allUsers = (sbu && Object.keys(sbu).length > 0) ? sbu : {};
+      if (!Object.keys(allUsers).length && typeof getUsers === 'function') allUsers = getUsers() || {};
+    } catch (e) {}
+
+    // Search filter
+    var search = document.getElementById('follow-panel-search');
+    var query  = search ? search.value.trim().toLowerCase() : '';
+    var filtered = emailList.filter(function (email) {
+      if (!query) return true;
+      var u = allUsers[email] || {};
+      return (u.nickname || '').toLowerCase().includes(query) || email.toLowerCase().includes(query);
+    });
+
+    // Dedup check for silent refresh
+    var hash = _fpMode + '|' + filtered.join(',') + '|' + cu.email;
+    if (silent && hash === _fpLastHash) return;
+    _fpLastHash = hash;
+
+    // Count badge
+    var badge = document.getElementById('fp-count-badge');
+    if (badge) badge.textContent = emailList.length;
+
+    if (!filtered.length) {
+      list.innerHTML = '<div class="fp-empty">' +
+        '<div class="fp-empty-icon">' + (_fpMode === 'followers' ? '👥' : '🔭') + '</div>' +
+        '<div class="fp-empty-title">' + (
+          query
+            ? 'No results for "' + _esc(query) + '"'
+            : (_fpMode === 'followers' ? 'No followers yet' : 'Not following anyone yet')
+        ) + '</div>' +
+        '<div class="fp-empty-msg">' + (
+          query ? '' : (_fpMode === 'followers'
+            ? "When someone follows you, you'll see it here"
+            : "Users you follow will appear here")
+        ) + '</div>' +
+      '</div>';
+      return;
+    }
+
+    var myFollowing = ((fd[cu.email] || {}).following || []);
+
+    list.innerHTML = filtered.map(function (email) {
+      var u      = allUsers[email] || {};
+      var nick   = u.nickname || email.split('@')[0];
+      var avatar = u.avatar   || '';
+      var isSelf = (email === cu.email);
+      var amFollowing = myFollowing.includes(email);
+
+      var avHtml = avatar
+        ? '<div class="fp-avatar"><img src="' + _esc(avatar) + '" alt="" loading="lazy" onerror="this.style.display=\'none\'"></div>'
+        : '<div class="fp-avatar">' + _esc((nick[0] || '?').toUpperCase()) + '</div>';
+
+      var actionHtml = isSelf
+        ? '<span class="fp-you-badge">You</span>'
+        : '<button class="fp-follow-btn ' + (amFollowing ? 'following' : '') + '" ' +
+            'data-target="' + _esc(email) + '" ' +
+            'onclick="event.stopPropagation();_fpToggleFollow(this)">' +
+            (amFollowing ? 'Following' : 'Follow') +
+          '</button>';
+
+      return '<div class="fp-user-row" data-email="' + _esc(email) + '" onclick="_fpOpenProfile(\'' + _esc(email) + '\')">' +
+        avHtml +
+        '<div class="fp-info">' +
+          '<div class="fp-name">'  + _esc(nick)  + '</div>' +
+          '<div class="fp-email">' + _esc(email) + '</div>' +
+        '</div>' +
+        actionHtml +
+      '</div>';
+    }).join('');
+  };
+
+  // ── Follow / Unfollow ─────────────────────────────────────
+  window._fpToggleFollow = function (btn) {
+    var target = btn.dataset.target;
+    if (!target || typeof toggleFollow !== 'function') return;
+
+    // Optimistic UI — capture desired state BEFORE toggling
+    var wasFollowing  = btn.classList.contains('following');
+    var willFollow    = !wasFollowing;
+    btn.textContent   = willFollow ? 'Following' : 'Follow';
+    btn.classList.toggle('following', willFollow);
+
+    // ── Lock this button for 3 s so poll/re-render can't revert it ──
+    btn.dataset.lockedFollowing = willFollow ? '1' : '0';
+    btn.dataset.lockedUntil     = String(Date.now() + 3000);
+
+    toggleFollow(target);
+
+    // Re-render after short delay to sync actual data, then restore lock
+    setTimeout(function () {
+      _fpLastHash = '';
+      renderFollowPanelList();
+      // After re-render the old btn reference is gone; find the new one and re-lock
+      var newBtn = document.querySelector('.fp-follow-btn[data-target="' + target + '"]');
+      if (newBtn) {
+        newBtn.textContent = willFollow ? 'Following' : 'Follow';
+        newBtn.classList.toggle('following', willFollow);
+        newBtn.dataset.lockedFollowing = willFollow ? '1' : '0';
+        newBtn.dataset.lockedUntil     = String(Date.now() + 2500);
+      }
+    }, 200);
+  };
+
+  // ── Open a user's profile ─────────────────────────────────
+  window._fpOpenProfile = function (email) {
+    closeFollowPanel();
+    if (!email) return;
+    var cu = (typeof currentUser !== 'undefined') ? currentUser : null;
+
+    if (cu && email === cu.email) {
+      if (typeof switchReelTab === 'function') switchReelTab('profile');
+      return;
+    }
+    try {
+      var allUsers = (typeof getUsers === 'function') ? getUsers() : {};
+      var u = allUsers[email];
+      if (u && typeof renderProfile === 'function') {
+        renderProfile(u);
+        if (typeof switchReelTab === 'function') switchReelTab('profile', true);
+      }
+    } catch (e) {}
+  };
+
+  // ── Escape helper ─────────────────────────────────────────
+  function _esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Live refresh when follow data changes (storage event) ──
+  window.addEventListener('storage', function (e) {
+    if (e.key === 'punahub_follow') {
+      var overlay = document.getElementById('follow-panel-overlay');
+      if (overlay && !overlay.classList.contains('hidden')) {
+        _fpLastHash = '';
+        renderFollowPanelList();
+      }
+    }
+  });
+
+  // ── Re-render on app foreground ───────────────────────────
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) {
+      var overlay = document.getElementById('follow-panel-overlay');
+      if (overlay && !overlay.classList.contains('hidden')) {
+        _fpLastHash = '';
+        renderFollowPanelList();
+      }
+    }
+  });
+
+})();
+(function() {
+  'use strict';
+
+  function buildWebLayout() {
+    // Only on desktop
+    if (window.innerWidth < 900) return;
+
+    var appFrame = document.getElementById('app-frame');
+    if (!appFrame || document.getElementById('web-sidebar')) return;
+
+    var body = document.body;
+
+    // ── LEFT SIDEBAR ──────────────────────────────────────
+    var sidebar = document.createElement('div');
+    sidebar.id = 'web-sidebar';
+    sidebar.innerHTML = `
+      <!-- Logo -->
+      <div class="web-sidebar-logo" style="display:flex;align-items:center;gap:10px;padding:0 12px 28px;margin-bottom:4px">
+        <span class="web-logo-icon" style="font-size:1.2rem;color:#c9f542;flex-shrink:0">✦</span>
+        <span class="web-logo-text" style="font-family:'DM Serif Display',serif;font-size:1.35rem;letter-spacing:-0.01em">
+          <span style="color:#fff">puna</span><span style="color:#c9f542">Hub</span>
+        </span>
+      </div>
+
+      <!-- Nav Items -->
+      <nav style="display:flex;flex-direction:column;gap:4px;flex:1">
+        <button class="web-nav-item" id="web-nav-feed" onclick="window.__webNavTo('feed')" style="display:flex;align-items:center;gap:14px;background:rgba(201,245,66,0.08);border:1px solid rgba(201,245,66,0.15);border-radius:12px;padding:12px 14px;cursor:pointer;color:#c9f542;font-family:'DM Sans',sans-serif;font-size:0.9rem;font-weight:600;transition:all 0.2s;-webkit-tap-highlight-color:transparent;width:100%">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span class="web-nav-label">Feed</span>
+        </button>
+
+        <button class="web-nav-item" id="web-nav-explore" onclick="window.__webNavTo('explore')" style="display:flex;align-items:center;gap:14px;background:transparent;border:1px solid transparent;border-radius:12px;padding:12px 14px;cursor:pointer;color:#6b7280;font-family:'DM Sans',sans-serif;font-size:0.9rem;font-weight:500;transition:all 0.2s;-webkit-tap-highlight-color:transparent;width:100%">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <span class="web-nav-label">Search</span>
+        </button>
+
+        <button class="web-nav-item" id="web-nav-upload" onclick="typeof openUpload === 'function' && openUpload()" style="display:flex;align-items:center;gap:14px;background:transparent;border:1px solid transparent;border-radius:12px;padding:12px 14px;cursor:pointer;color:#6b7280;font-family:'DM Sans',sans-serif;font-size:0.9rem;font-weight:500;transition:all 0.2s;-webkit-tap-highlight-color:transparent;width:100%">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="3"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          <span class="web-nav-label">Create</span>
+        </button>
+
+        <button class="web-nav-item" id="web-nav-notif" onclick="typeof openNotifPanelWithTest === 'function' && openNotifPanelWithTest()" style="position:relative;display:flex;align-items:center;gap:14px;background:transparent;border:1px solid transparent;border-radius:12px;padding:12px 14px;cursor:pointer;color:#6b7280;font-family:'DM Sans',sans-serif;font-size:0.9rem;font-weight:500;transition:all 0.2s;-webkit-tap-highlight-color:transparent;width:100%">
+          <span style="position:relative;display:inline-flex">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+            <span id="web-notif-badge" style="display:none;position:absolute;top:-5px;right:-5px;background:#ff2d55;color:#fff;font-size:0.55rem;font-weight:900;border-radius:50%;min-width:16px;height:16px;line-height:16px;text-align:center;padding:0 2px;font-family:'DM Sans',sans-serif;border:2px solid #0a0c10"></span>
+          </span>
+          <span class="web-nav-label">Notifications</span>
+        </button>
+
+        <button class="web-nav-item" id="web-nav-profile" onclick="window.__webNavTo('profile')" style="display:flex;align-items:center;gap:14px;background:transparent;border:1px solid transparent;border-radius:12px;padding:12px 14px;cursor:pointer;color:#6b7280;font-family:'DM Sans',sans-serif;font-size:0.9rem;font-weight:500;transition:all 0.2s;-webkit-tap-highlight-color:transparent;width:100%">
+          <div id="web-nav-avatar" style="width:24px;height:24px;border-radius:50%;background:#272c38;display:flex;align-items:center;justify-content:center;font-size:0.8rem;overflow:hidden;border:1.5px solid currentColor;flex-shrink:0">
+            <span id="web-nav-avatar-ph">👤</span>
+            <img id="web-nav-avatar-img" src="" alt="" style="display:none;width:100%;height:100%;object-fit:cover;border-radius:50%"/>
+          </div>
+          <span class="web-nav-label">Profile</span>
+        </button>
+      </nav>
+
+      <!-- Footer -->
+      <div style="margin-top:auto;padding-top:20px;border-top:1px solid #1a1d26">
+        <button onclick="typeof openSettings === 'function' && openSettings()" style="display:flex;align-items:center;gap:14px;background:transparent;border:none;border-radius:12px;padding:12px 14px;cursor:pointer;color:#6b7280;font-family:'DM Sans',sans-serif;font-size:0.85rem;font-weight:500;transition:all 0.2s;width:100%">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+          <span class="web-sidebar-footer-text web-nav-label">Settings</span>
+        </button>
+        <div style="padding:8px 14px 0;font-size:0.65rem;color:#2d3340;font-family:'DM Sans',sans-serif" class="web-sidebar-footer-text">© 2025 punaHub</div>
+      </div>
+    `;
+
+    // ── MAIN CONTAINER (phone + right panel) ──────────────
+    var mainDiv = document.createElement('div');
+    mainDiv.id = 'web-main';
+
+    // Phone shell wrapper
+    var phoneShell = document.createElement('div');
+    phoneShell.id = 'web-phone-shell';
+
+    // ── RIGHT PANEL ────────────────────────────────────────
+    var rightPanel = document.createElement('div');
+    rightPanel.id = 'web-right-panel';
+    rightPanel.innerHTML = `
+      <!-- Who to follow suggestions -->
+      <div style="padding:0 0 16px">
+        <div style="font-family:'DM Sans',sans-serif;font-size:0.82rem;font-weight:700;color:#6b7280;letter-spacing:0.05em;text-transform:uppercase;margin-bottom:14px">Suggestions for you</div>
+        <div id="web-suggestions-list" style="display:flex;flex-direction:column;gap:12px">
+          <div style="text-align:center;color:#3d4456;font-size:0.82rem;font-family:'DM Sans',sans-serif;padding:20px 0">Loading users…</div>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid #1a1d26;padding-top:16px;margin-top:4px">
+        <div style="font-size:0.68rem;color:#2d3340;font-family:'DM Sans',sans-serif;line-height:1.7">
+          About · Help · Press · API · Jobs · Privacy · Terms<br>
+          © 2025 punaHub — Share your moments
+        </div>
+      </div>
+    `;
+
+    // Move app-frame into phone shell
+    body.removeChild(appFrame);
+    phoneShell.appendChild(appFrame);
+    mainDiv.appendChild(phoneShell);
+    mainDiv.appendChild(rightPanel);
+
+    // Build the full layout
+    body.insertBefore(sidebar, body.firstChild);
+    body.insertBefore(mainDiv, body.children[1]);
+
+    // ── SYNC SIDEBAR WITH APP STATE ────────────────────────
+    // Mirror notif badge
+    var observer = new MutationObserver(function() {
+      var appBadge = document.getElementById('notif-badge');
+      var webBadge = document.getElementById('web-notif-badge');
+      if (appBadge && webBadge) {
+        if (webBadge.textContent !== appBadge.textContent) webBadge.textContent = appBadge.textContent;
+        if (webBadge.style.display !== appBadge.style.display) webBadge.style.display = appBadge.style.display;
+      }
+      // Sync avatar
+      var appAvImg = document.getElementById('nav-avatar-img');
+      var webAvImg = document.getElementById('web-nav-avatar-img');
+      var appAvPh  = document.getElementById('nav-avatar-ph');
+      var webAvPh  = document.getElementById('web-nav-avatar-ph');
+      if (appAvImg && webAvImg) {
+        if (!appAvImg.classList.contains('hidden') && appAvImg.src) {
+          if (webAvImg.src !== appAvImg.src) webAvImg.src = appAvImg.src;
+          if (webAvImg.style.display !== 'block') webAvImg.style.display = 'block';
+          if (webAvPh && webAvPh.style.display !== 'none') webAvPh.style.display = 'none';
+        } else {
+          if (webAvImg.style.display !== 'none') webAvImg.style.display = 'none';
+          if (webAvPh && webAvPh.style.display !== '') webAvPh.style.display = '';
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src','style','class'] });
+
+    // ── NAV HANDLER ────────────────────────────────────────
+    window.__webNavTo = function(target) {
+      // Update active state
+      ['feed','explore','upload','notif','profile'].forEach(function(id) {
+        var btn = document.getElementById('web-nav-' + id);
+        if (!btn) return;
+        var isActive = id === target;
+        btn.style.background = isActive ? 'rgba(201,245,66,0.08)' : 'transparent';
+        btn.style.borderColor = isActive ? 'rgba(201,245,66,0.15)' : 'transparent';
+        btn.style.color = isActive ? '#c9f542' : '#6b7280';
+        btn.style.fontWeight = isActive ? '600' : '500';
+      });
+
+      if (target === 'feed') {
+        if (typeof switchReelTab === 'function') switchReelTab('feed');
+      } else if (target === 'profile') {
+        if (typeof switchReelTab === 'function') switchReelTab('profile');
+      } else if (target === 'explore') {
+        if (typeof openHubSheet === 'function') openHubSheet();
+      }
+    };
+
+    // Auto-detect active tab changes
+    var feedBtn  = document.getElementById('nav-feed');
+    var profBtn  = document.getElementById('nav-profile');
+    if (feedBtn) feedBtn.addEventListener('click', function() { window.__webNavTo('feed'); });
+    if (profBtn) profBtn.addEventListener('click', function() { window.__webNavTo('profile'); });
+
+    // ── SUGGESTIONS PANEL ─────────────────────────────────
+    function refreshSuggestions() {
+      var cu = window.__punaActiveUser;
+      if (!cu) { setTimeout(refreshSuggestions, 1000); return; }
+
+      var listEl = document.getElementById('web-suggestions-list');
+      if (!listEl) return;
+
+      var users = {};
+      try {
+        if (window.__sbData && window.__sbData.users) {
+          users = window.__sbData.users;
+        } else {
+          var raw = localStorage.getItem('punahub_users_xml') || '';
+          // Parse XML to extract users
+          var parser = new DOMParser();
+          var doc = parser.parseFromString(raw, 'application/xml');
+          doc.querySelectorAll('user').forEach(function(node) {
+            var get = function(tag) { var el = node.querySelector(tag); return el ? el.textContent : ''; };
+            var email = get('email').trim().toLowerCase();
+            if (email) users[email] = { email: email, nickname: get('nickname'), avatar: get('avatar') };
+          });
+        }
+      } catch(e) {}
+
+      var fd = {};
+      try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch(e) {}
+      var myFollowing = ((fd[cu.email] || {}).following || []);
+
+      // Show users not already following (exclude self)
+      var suggestions = Object.values(users).filter(function(u) {
+        return u.email !== cu.email && !myFollowing.includes(u.email);
+      }).slice(0, 5);
+
+      if (!suggestions.length) {
+        listEl.innerHTML = '<div style="text-align:center;color:#3d4456;font-size:0.82rem;font-family:DM Sans,sans-serif;padding:20px 0">No suggestions right now</div>';
+        return;
+      }
+
+      listEl.innerHTML = suggestions.map(function(u) {
+        var av = u.avatar && !u.avatar.startsWith('data:')
+          ? '<img src="' + u.avatar + '" style="width:40px;height:40px;border-radius:50%;object-fit:cover;border:1.5px solid #272c38;flex-shrink:0">'
+          : '<div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#1e2a14,#2a3a1e);display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;border:1.5px solid #272c38;overflow:hidden">'
+            + (u.avatar && u.avatar.startsWith('data:')
+              ? '<img src="' + u.avatar + '" style="width:100%;height:100%;object-fit:cover">'
+              : (u.nickname ? u.nickname[0].toUpperCase() : '👤'))
+            + '</div>';
+        var safeNick = (u.nickname || u.email.split('@')[0]).replace(/</g,'&lt;');
+        var safeEmail = u.email.replace(/</g,'&lt;');
+        return '<div style="display:flex;align-items:center;gap:10px">' +
+          av +
+          '<div style="flex:1;min-width:0">' +
+            '<div style="font-size:0.83rem;font-weight:600;color:#e8eaf0;font-family:DM Sans,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + safeNick + '</div>' +
+            '<div style="font-size:0.73rem;color:#6b7280;font-family:DM Sans,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + safeEmail + '</div>' +
+          '</div>' +
+          '<button data-suggest-email="' + safeEmail.replace(/'/g, '&#39;') + '" onclick="window.__webSuggestFollow(this)" style="background:rgba(201,245,66,0.1);color:#c9f542;border:1px solid rgba(201,245,66,0.2);border-radius:8px;padding:5px 12px;font-family:DM Sans,sans-serif;font-size:0.75rem;font-weight:600;cursor:pointer;flex-shrink:0;transition:all 0.2s;-webkit-tap-highlight-color:transparent">Follow</button>' +
+        '</div>';
+      }).join('');
+    }
+
+    // Safe click handler for the Follow button (avoids nested-quote onclick issues)
+    window.__webSuggestFollow = function(btn) {
+      var email = btn.getAttribute('data-suggest-email');
+      if (!email || typeof toggleFollow !== 'function') return;
+      toggleFollow(email, true); // silent — suggested-profile follow, no push notif
+      btn.textContent = 'Following';
+      btn.style.color = '#6b7280';
+      btn.style.border = '1px solid #272c38';
+      btn.style.background = 'transparent';
+      setTimeout(function() { if (typeof refreshSuggestions === 'function') refreshSuggestions(); }, 1000);
+    };
+
+    // Refresh suggestions when user logs in
+    var _sugg_intvl = setInterval(function() {
+      if (window.__punaActiveUser) {
+        clearInterval(_sugg_intvl);
+        refreshSuggestions();
+        // Refresh periodically
+        setInterval(refreshSuggestions, 15000);
+      }
+    }, 500);
+
+    // ── HOVER EFFECTS FOR NAV ITEMS ────────────────────────
+    document.querySelectorAll('.web-nav-item').forEach(function(btn) {
+      btn.addEventListener('mouseenter', function() {
+        if (this.style.color !== 'rgb(201, 245, 66)') {
+          this.style.background = 'rgba(255,255,255,0.04)';
+          this.style.color = '#e8eaf0';
+          this.style.borderColor = 'rgba(255,255,255,0.06)';
+        }
+      });
+      btn.addEventListener('mouseleave', function() {
+        if (this.style.color !== 'rgb(201, 245, 66)') {
+          this.style.background = 'transparent';
+          this.style.color = '#6b7280';
+          this.style.borderColor = 'transparent';
+        }
+      });
+    });
+
+    // Set feed as default active
+    window.__webNavTo('feed');
+
+    console.log('[punaHub] Instagram-style web layout active!');
+  }
+
+  // Build layout when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', buildWebLayout);
+  } else {
+    buildWebLayout();
+  }
+  
+  // Also handle resize
+  var _lastW = window.innerWidth;
+  window.addEventListener('resize', function() {
+    var w = window.innerWidth;
+    if ((_lastW < 900 && w >= 900) || (_lastW >= 900 && w < 900)) {
+      _lastW = w;
+      location.reload();
+    }
+  });
+
+})();
+// ══════════════════════════════════════════════════════════
+//  📍 NEARBY FRIENDS — hidden live-location suggestion tray
+//  Silently watches device location in the background. Users
+//  physically close to you are surfaced as an Instagram-style
+//  card carousel at the top of the home feed — photo card with
+//  a dismiss (✕) button, name, and a Follow button underneath.
+//  No settings toggle; fails silently without location access.
+// ══════════════════════════════════════════════════════════
+(function() {
+  var _perfTier = window.__punaPerfTier || 'high';
+  var NEARBY_RADIUS_KM  = 5;                // "close to you" threshold
+  var MIN_UPLOAD_GAP_MS = (_perfTier === 'low' ? 180 : _perfTier === 'mid' ? 120 : 90) * 1000;  // throttle writing my own location
+  var POLL_OTHERS_MS    = (_perfTier === 'low' ? 60 : _perfTier === 'mid' ? 40 : 25) * 1000;    // how often to re-check other users
+  var STALE_LOCATION_MS = 30 * 60 * 1000;   // ignore locations older than 30 min
+  var MAX_CARDS          = _perfTier === 'low' ? 4 : _perfTier === 'mid' ? 6 : 8;               // cap carousel length
+
+  var _lastUploadAt = 0;
+  var _watchId = null;
+  var _dismissed = {};   // email -> true (hidden for this session)
+
+  // ── Gate: only run once login has fully completed (not during ──
+  // the sign-in/sign-up flow, avatar step, or after logout).
+  function loginReady() {
+    return !!(window.__punaActiveUser && window.__punaLoginComplete === true);
+  }
+
+  try { _dismissed = JSON.parse(sessionStorage.getItem('punahub_nearby_dismissed') || '{}'); } catch(e) {}
+  function persistDismissed() {
+    try { sessionStorage.setItem('punahub_nearby_dismissed', JSON.stringify(_dismissed)); } catch(e) {}
+  }
+
+  function toRad(d) { return d * Math.PI / 180; }
+  function distKm(lat1, lon1, lat2, lon2) {
+    var R = 6371;
+    var dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+    var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+            Math.sin(dLon/2) * Math.sin(dLon/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // ── Silently persist my current location on my own user row ──
+  async function uploadMyLocation(lat, lng) {
+    var cu = window.__punaActiveUser;
+    if (!cu || !cu.email || !window.sb) return;
+    var now = Date.now();
+    if (now - _lastUploadAt < MIN_UPLOAD_GAP_MS) return;
+    _lastUploadAt = now;
+    try {
+      var existing = (window.__sbData && window.__sbData.users && window.__sbData.users[cu.email]) || {};
+      var merged = Object.assign({}, existing, { lat: lat, lng: lng, geoTs: now });
+      if (window.__sbData && window.__sbData.users) window.__sbData.users[cu.email] = merged;
+      await window.sb.from('punahub_users').upsert({ email: cu.email, data: merged }, { onConflict: 'email' });
+    } catch (e) { /* fail silently — hidden feature, never surface errors */ }
+  }
+
+  // ── Pull latest rows so we can see other users' locations ──
+  async function refreshUsersSnapshot() {
+    if (!window.sb) return;
+    try {
+      var res = await window.sb.from('punahub_users').select('email, data');
+      if (res && res.data && res.data.length) {
+        if (!window.__sbData) window.__sbData = {};
+        if (!window.__sbData.users) window.__sbData.users = {};
+        res.data.forEach(function(r) { window.__sbData.users[r.email] = r.data; });
+      }
+    } catch (e) {}
+  }
+
+  // ── Build the carousel container (created once, reused) ──
+  function ensureWrap() {
+    var wrap = document.getElementById('nearby-carousel-wrap');
+    if (wrap) return wrap;
+    wrap = document.createElement('div');
+    wrap.id = 'nearby-carousel-wrap';
+    wrap.innerHTML = '<div id="nearby-carousel-track"></div>';
+    var screen = document.getElementById('reel-screen');
+    (screen || document.body).appendChild(wrap);
+    return wrap;
+  }
+
+  function escHtml(s) {
+    return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function cardHtml(email, u, km) {
+    var name = escHtml(u.nickname || email.split('@')[0]);
+    var badge = (typeof km === 'number')
+      ? '📍 ' + (km < 1 ? Math.round(km * 1000) + 'm away' : km.toFixed(1) + 'km away')
+      : '✨ Suggested';
+    var photo = u.avatar
+      ? '<img src="' + u.avatar + '" alt="">'
+      : '<div class="nearby-card-fallback">' + (u.nickname ? u.nickname[0].toUpperCase() : '👤') + '</div>';
+    return (
+      '<div class="nearby-card" data-email="' + escHtml(email) + '">' +
+        '<div class="nearby-card-photo" onclick="window.__nearbyGoProfile(\'' + email.replace(/'/g,"\\'") + '\')">' +
+          photo +
+          '<div class="nearby-card-gradient"></div>' +
+          '<button class="nearby-card-close" onclick="event.stopPropagation();window.__nearbyDismiss(\'' + email.replace(/'/g,"\\'") + '\')">✕</button>' +
+          '<div class="nearby-card-badge">' + badge + '</div>' +
+        '</div>' +
+        '<div class="nearby-card-name">' + name + '</div>' +
+        '<button class="nearby-card-follow" onclick="window.__nearbyFollow(\'' + email.replace(/'/g,"\\'") + '\', this)">Follow</button>' +
+      '</div>'
+    );
+  }
+
+  window.__nearbyDismiss = function(email) {
+    _dismissed[email] = true;
+    persistDismissed();
+    var cards = document.querySelectorAll('.nearby-card[data-email="' + CSS.escape(email) + '"]');
+    if (!cards.length) return;
+    cards.forEach(function(card) {
+      card.style.transition = 'opacity 0.2s, transform 0.2s';
+      card.style.opacity = '0';
+      card.style.transform = 'scale(0.9)';
+    });
+    setTimeout(function() {
+      cards.forEach(function(card) { card.remove(); });
+      var homeTrack = document.getElementById('nearby-carousel-track');
+      var homeWrap  = document.getElementById('nearby-carousel-wrap');
+      if (homeTrack && homeWrap && !homeTrack.children.length) homeWrap.classList.remove('show');
+      var profTrack   = document.getElementById('profile-suggest-track');
+      var profSection = document.getElementById('profile-suggest-section');
+      if (profTrack && profSection && !profTrack.children.length) profSection.style.display = 'none';
+    }, 200);
+  };
+
+  window.__nearbyFollow = function(email, btn) {
+    // silent=true: following from a suggested-profile card should not
+    // push a notification to the other person.
+    if (typeof toggleFollow === 'function') toggleFollow(email, true);
+    if (btn) {
+      btn.textContent = 'Following';
+      btn.classList.add('following');
+    }
+    setTimeout(function() { window.__nearbyDismiss(email); }, 900);
+  };
+
+  window.__nearbyGoProfile = function(email) {
+    if (typeof hubGoProfile === 'function') hubGoProfile(email);
+  };
+
+  // ── Render the carousel from the current best candidates ──
+  function renderCarousel(list) {
+    var wrap = ensureWrap();
+    var track = document.getElementById('nearby-carousel-track');
+    if (!track) return;
+
+    if (!list.length) {
+      wrap.classList.remove('show');
+      return;
+    }
+
+    track.innerHTML = list.map(function(item) {
+      return cardHtml(item.email, item.u, item.km);
+    }).join('');
+
+    // Reflect current follow state on buttons
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var cu = window.__punaActiveUser;
+    var myFollowing = (cu && (fd[cu.email] || {}).following) || [];
+    list.forEach(function(item) {
+      if (myFollowing.indexOf(item.email) !== -1) {
+        var card = document.querySelector('.nearby-card[data-email="' + CSS.escape(item.email) + '"] .nearby-card-follow');
+        if (card) { card.textContent = 'Following'; card.classList.add('following'); }
+      }
+    });
+
+    wrap.classList.add('show');
+  }
+
+  // ── Find eligible nearby users and render them ──────────
+  function checkNearby(myLat, myLng) {
+    if (!loginReady()) return;
+    var cu = window.__punaActiveUser;
+    if (!cu || !window.__sbData || !window.__sbData.users) return;
+
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var myFollowing = ((fd[cu.email] || {}).following || []);
+
+    var now = Date.now();
+    var candidates = [];
+
+    Object.keys(window.__sbData.users).forEach(function(email) {
+      if (email === cu.email) return;
+      if (myFollowing.indexOf(email) !== -1) return;
+      if (_dismissed[email]) return;
+      var u = window.__sbData.users[email];
+      if (!u || typeof u.lat !== 'number' || typeof u.lng !== 'number') return;
+      if (!u.geoTs || (now - u.geoTs) > STALE_LOCATION_MS) return;
+
+      var km = distKm(myLat, myLng, u.lat, u.lng);
+      if (km <= NEARBY_RADIUS_KM) candidates.push({ email: email, u: u, km: km });
+    });
+
+    candidates.sort(function(a, b) { return a.km - b.km; });
+    renderCarousel(candidates.slice(0, MAX_CARDS));
+    renderProfileSuggestions();
+  }
+
+  // ── Gather candidates for the Profile tab strip — nearby   ──
+  // users first (if location known), falling back to general
+  // "people you don't follow yet" so the section is never empty.
+  function gatherCandidates(maxCount) {
+    if (!loginReady()) return [];
+    var cu = window.__punaActiveUser;
+    if (!cu || !window.__sbData || !window.__sbData.users) return [];
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var myFollowing = ((fd[cu.email] || {}).following || []);
+    var now = Date.now();
+    var geo = window.__punaMyGeo;
+
+    var nearby = [], others = [];
+    Object.keys(window.__sbData.users).forEach(function(email) {
+      if (email === cu.email) return;
+      if (myFollowing.indexOf(email) !== -1) return;
+      if (_dismissed[email]) return;
+      var u = window.__sbData.users[email];
+      if (!u) return;
+
+      if (geo && typeof u.lat === 'number' && typeof u.lng === 'number' &&
+          u.geoTs && (now - u.geoTs) <= STALE_LOCATION_MS) {
+        var km = distKm(geo.lat, geo.lng, u.lat, u.lng);
+        if (km <= NEARBY_RADIUS_KM) { nearby.push({ email: email, u: u, km: km }); return; }
+      }
+      others.push({ email: email, u: u, km: null });
+    });
+
+    nearby.sort(function(a, b) { return a.km - b.km; });
+    return nearby.concat(others).slice(0, maxCount || MAX_CARDS);
+  }
+
+  // ── Render the "Suggested for you" strip on the Profile tab ──
+  function renderProfileSuggestions() {
+    var section = document.getElementById('profile-suggest-section');
+    var track   = document.getElementById('profile-suggest-track');
+    if (!section || !track) return;
+
+    if (!loginReady()) { section.style.display = 'none'; track.innerHTML = ''; return; }
+
+    var list = gatherCandidates(8);
+    if (!list.length) { section.style.display = 'none'; return; }
+
+    track.innerHTML = list.map(function(item) {
+      return cardHtml(item.email, item.u, item.km);
+    }).join('');
+
+    var fd = {};
+    try { fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}'); } catch (e) {}
+    var cu = window.__punaActiveUser;
+    var myFollowing = (cu && (fd[cu.email] || {}).following) || [];
+    list.forEach(function(item) {
+      if (myFollowing.indexOf(item.email) !== -1) {
+        track.querySelectorAll('.nearby-card[data-email="' + CSS.escape(item.email) + '"] .nearby-card-follow')
+          .forEach(function(b) { b.textContent = 'Following'; b.classList.add('following'); });
+      }
+    });
+
+    section.style.display = 'block';
+  }
+  window.__renderProfileSuggestions = renderProfileSuggestions;
+
+  // ── Geolocation plumbing ─────────────────────────────────
+  var _lastCheckAt = 0;
+  var MIN_CHECK_GAP_MS = 5000; // never re-render nearby UI more than once per 5s,
+                                // even if the browser fires position updates rapidly
+  function onPosition(pos) {
+    var lat = pos.coords.latitude, lng = pos.coords.longitude;
+    window.__punaMyGeo = { lat: lat, lng: lng, ts: Date.now() };
+    uploadMyLocation(lat, lng);
+    var now = Date.now();
+    if (now - _lastCheckAt < MIN_CHECK_GAP_MS) return;
+    _lastCheckAt = now;
+    checkNearby(lat, lng);
+  }
+  function onPositionError() { /* silent — permission denied, unsupported, or timeout */ }
+
+  function startGeoWatch() {
+    if (!loginReady()) return;
+    if (_watchId !== null || !navigator.geolocation) return;
+    try {
+      _watchId = navigator.geolocation.watchPosition(onPosition, onPositionError, {
+        enableHighAccuracy: false,
+        maximumAge: _perfTier === 'low' ? 180000 : 60000,
+        timeout: _perfTier === 'low' ? 30000 : 20000
+      });
+    } catch (e) {}
+  }
+
+  // ── Fully reset the feature — called on logout so nothing ──
+  // lingers on the login/signup screens.
+  window.__nearbyReset = function() {
+    if (_watchId !== null && navigator.geolocation) {
+      try { navigator.geolocation.clearWatch(_watchId); } catch (e) {}
+    }
+    _watchId = null;
+    _lastUploadAt = 0;
+    window.__punaMyGeo = null;
+
+    var homeWrap  = document.getElementById('nearby-carousel-wrap');
+    var homeTrack = document.getElementById('nearby-carousel-track');
+    if (homeWrap)  homeWrap.classList.remove('show');
+    if (homeTrack) homeTrack.innerHTML = '';
+
+    var profSection = document.getElementById('profile-suggest-section');
+    var profTrack   = document.getElementById('profile-suggest-track');
+    if (profSection) profSection.style.display = 'none';
+    if (profTrack)   profTrack.innerHTML = '';
+  };
+
+  // ── Periodically re-check against freshly pulled users ──
+  setInterval(function() {
+    if (!loginReady()) return;
+    refreshUsersSnapshot().then(function() {
+      if (window.__punaMyGeo) checkNearby(window.__punaMyGeo.lat, window.__punaMyGeo.lng);
+      else renderProfileSuggestions();
+    });
+  }, POLL_OTHERS_MS);
+
+  // ── Kick off automatically once login has FULLY completed ──
+  // (not while the sign-in/sign-up form or avatar step is showing)
+  var _geoInitIntvl = setInterval(function() {
+    if (loginReady()) {
+      clearInterval(_geoInitIntvl);
+      startGeoWatch();
+      refreshUsersSnapshot().then(renderProfileSuggestions);
+    }
+  }, 800);
+
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && loginReady()) startGeoWatch();
+  });
+})();
+// ╔══════════════════════════════════════════════════════════╗
+// ║  SUPABASE CONFIG — 100% safe to keep in HTML file        ║
+// ╚══════════════════════════════════════════════════════════╝
+const SB_URL     = 'https://hafjrxixytudodnuptky.supabase.co';   // your project URL
+const SB_ANON    = 'sb_publishable_3vO4qDk7kairrebxsaByCA_0zaEavXj';    // anon/public key
+window.SB_ANON = SB_ANON;  // expose for Edge Function auth header
+window.SB_URL  = SB_URL;   // expose for push engine
+
+// ╔══════════════════════════════════════════════════════════╗
+// ║  CLOUDINARY CONFIG — for video & avatar uploads          ║
+// ╚══════════════════════════════════════════════════════════╝
+window.CLOUDINARY_CLOUD  = 'dlw7gd2k7';         // ✅ your cloud name
+window.CLOUDINARY_PRESET = 'PASTE_PRESET_NAME'; // paste unsigned preset name
+// ════════════════════════════════════════════════════════════
+
+window.__cloudSync = null;
+window.__sbData    = { users:{}, reels:[], follows:{}, settings:{} };
+
+(async function() {
+
+  const configured = SB_URL !== 'PASTE_YOUR_SUPABASE_URL' && SB_ANON !== 'PASTE_YOUR_ANON_KEY';
+  if (!configured) {
+    console.log('Supabase not configured — paste your URL and anon key above.');
+    return;
+  }
+
+  // ── RLS Error Banner ────────────────────────────────────
+  // ── Toast ───────────────────────────────────────────────
+  function toast(msg, ok) {
+    const t = document.createElement('div');
+    t.style.cssText = `position:fixed;bottom:72px;left:50%;transform:translateX(-50%);
+      background:${ok?'#0a2e1a':'#2e0a0a'};color:#e8eaf0;
+      border:1px solid ${ok?'#3ecf8e':'#f54242'};
+      padding:9px 18px;border-radius:24px;font-size:0.78rem;
+      font-family:'DM Sans',sans-serif;z-index:99999;
+      pointer-events:none;opacity:1;transition:opacity 0.4s`;
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),400); },3500);
+  }
+
+  // ── Init Supabase ───────────────────────────────────────
+  const { createClient } = supabase;
+  const sb = createClient(SB_URL, SB_ANON);
+  window.sb = sb;
+
+  // ── Upload file to Supabase Storage ────────────────────
+  async function uploadToStorage(path, dataURL, mimeType) {
+    if (!dataURL || !dataURL.startsWith('data:')) return dataURL;
+    const res  = await fetch(dataURL);
+    const blob = await res.blob();
+    // Always remove old file first so CDN cache is busted
+    try { await sb.storage.from('punahub').remove([path]); } catch(e) {}
+    const { error } = await sb.storage.from('punahub').upload(path, blob, { upsert:true, contentType: mimeType || blob.type });
+    if (error) throw error;
+    const { data } = sb.storage.from('punahub').getPublicUrl(path);
+    // Append cache-buster so browsers always fetch the fresh avatar
+    return data.publicUrl + '?v=' + Date.now();
+  }
+
+  // ── Upload video to Cloudinary ──────────────────────────
+  async function uploadVideoToCloudinary(file, reelId) {
+    if (!window.CLOUDINARY_CLOUD || window.CLOUDINARY_PRESET === 'PASTE_PRESET_NAME') return null;
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', window.CLOUDINARY_PRESET);
+    form.append('folder', 'punahub/reels');
+    form.append('public_id', reelId);
+    const res  = await fetch(`https://api.cloudinary.com/v1_1/${window.CLOUDINARY_CLOUD}/video/upload`, { method:'POST', body:form });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return {
+      videoUrl:  data.secure_url,
+      posterUrl: data.secure_url.replace('/upload/','/upload/w_180,h_320,c_fill,so_0.5/').replace(/\.\w+$/, '.jpg')
+    };
+  }
+
+
+  // ── PULL: load all data from Supabase on startup ────────
+  async function pullData() {
+    try {
+      let pulled = false;
+
+      // Users
+      const { data: users } = await sb.from('punahub_users').select('email, data');
+      if (users && users.length) {
+        window.__sbData.users = {};
+        users.forEach(r => { window.__sbData.users[r.email] = r.data; });
+        // ✅ Write back to localStorage XML so auth system sees cloud users
+        try {
+          const usersXML = typeof usersToXML === 'function' ? usersToXML(window.__sbData.users) : null;
+          if (usersXML) localStorage.setItem('punahub_users_xml', usersXML);
+        } catch(e) {}
+        pulled = true;
+      }
+
+      // Reels
+      const { data: reels } = await sb.from('punahub_reels').select('id, data').order('id', { ascending:true });
+      if (reels && reels.length) {
+        window.__sbData.reels = reels.map(r => r.data);
+        // ✅ Write back to localStorage so live engine sees cloud reels
+        try {
+          const lean = window.__sbData.reels.map(r => {
+            const c = Object.assign({}, r);
+            if (c.videoDataURL && c.videoDataURL.startsWith('data:')) delete c.videoDataURL;
+            if (c.poster && c.poster.startsWith('data:')) delete c.poster;
+            return c;
+          });
+          localStorage.setItem('punahub_reels', JSON.stringify(lean));
+        } catch(e) {}
+        pulled = true;
+      }
+
+      // ── Likes ─────────────────────────────────────────────
+      try {
+        const { data: sbLikes } = await sb.from('punahub_likes').select('reel_id, user_email, user_nickname, user_avatar, created_at');
+        if (sbLikes && sbLikes.length) {
+          // Merge likes into reels
+          const reelsArr = window.__sbData.reels || [];
+          // Reset likedBy/likes from Supabase source of truth
+          reelsArr.forEach(r => { r.likedBy = []; r.likes = 0; });
+          sbLikes.forEach(function(lk) {
+            const r = reelsArr.find(function(x){ return x.id === lk.reel_id; });
+            if (r) {
+              if (!r.likedBy) r.likedBy = [];
+              if (!r.likedBy.includes(lk.user_email)) {
+                r.likedBy.push(lk.user_email);
+                r.likes = (r.likes || 0) + 1;
+              }
+            }
+          });
+          window.__sbData.reels = reelsArr;
+          try {
+            const lean = reelsArr.map(r => { const c = Object.assign({}, r); if (c.videoDataURL && c.videoDataURL.startsWith('data:')) delete c.videoDataURL; if (c.poster && c.poster.startsWith('data:')) delete c.poster; return c; });
+            localStorage.setItem('punahub_reels', JSON.stringify(lean));
+          } catch(e) {}
+          console.log('[punaHub] ✅ Likes loaded from Supabase:', sbLikes.length);
+          pulled = true;
+        }
+      } catch(e) { console.warn('[punaHub] likes load failed:', e.message); }
+
+      // ── Comments ────────────────────────────────────────────
+      try {
+        const { data: sbComments } = await sb.from('punahub_comments').select('*').order('created_at', { ascending: true });
+        if (sbComments && sbComments.length) {
+          const reelsArr = window.__sbData.reels || [];
+          // Reset comments from Supabase source of truth
+          reelsArr.forEach(r => { r.comments = []; });
+          sbComments.forEach(function(sc) {
+            const r = reelsArr.find(function(x){ return x.id === sc.reel_id; });
+            if (r) {
+              if (!r.comments) r.comments = [];
+              r.comments.push({
+                id:        sc.id,
+                parentId:  sc.parent_id || null,
+                email:     sc.user_email,
+                nickname:  sc.user_nickname || '',
+                avatar:    sc.user_avatar || '',
+                text:      sc.text,
+                likes:     sc.likes || 0,
+                likedBy:   sc.liked_by || [],
+                createdAt: sc.created_at ? new Date(sc.created_at).getTime() : Date.now()
+              });
+            }
+          });
+          window.__sbData.reels = reelsArr;
+          try {
+            const lean = reelsArr.map(r => { const c = Object.assign({}, r); if (c.videoDataURL && c.videoDataURL.startsWith('data:')) delete c.videoDataURL; if (c.poster && c.poster.startsWith('data:')) delete c.poster; return c; });
+            localStorage.setItem('punahub_reels', JSON.stringify(lean));
+          } catch(e) {}
+          console.log('[punaHub] ✅ Comments loaded from Supabase:', sbComments.length);
+          pulled = true;
+        }
+      } catch(e) { console.warn('[punaHub] comments load failed:', e.message); }
+
+      // Follows
+      const { data: follows } = await sb.from('punahub_follows').select('email, data');
+      if (follows && follows.length) {
+        window.__sbData.follows = {};
+        follows.forEach(r => { window.__sbData.follows[r.email] = r.data; });
+        // ✅ Write back to localStorage so live engine and follow functions see it
+        try { localStorage.setItem('punahub_follow', JSON.stringify(window.__sbData.follows)); } catch(e) {}
+        pulled = true;
+      }
+
+      // Settings
+      const { data: settings } = await sb.from('punahub_settings').select('email, data');
+      if (settings && settings.length) {
+        window.__sbData.settings = {};
+        settings.forEach(r => { window.__sbData.settings[r.email] = r.data; });
+        pulled = true;
+      }
+
+      console.log('[punaHub] ✅ All data pulled from Supabase');
+      return pulled;
+    } catch(e) {
+      console.warn('Supabase pull failed:', e.message);
+      return false;
+    }
+  }
+
+  // ── Pull notifications for a specific user from Supabase ──
+  async function pullNotifs(userEmail) {
+    if (!userEmail) return;
+    try {
+      const { data: rows } = await sb
+        .from('punahub_notifs')
+        .select('payload, created_at')
+        .eq('to_email', userEmail)
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (!rows || !rows.length) return;
+      // Merge with existing local notifications (avoid duplicates by id)
+      let existing = [];
+      try { existing = JSON.parse(localStorage.getItem('punahub_notifs_' + userEmail) || '[]'); } catch(e) {}
+      const existingIds = new Set(existing.map(n => n.id));
+      const newOnes = [];
+      rows.forEach(function(row) {
+        try {
+          const n = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+          if (n && n.id && !existingIds.has(n.id)) newOnes.push(n);
+        } catch(e) {}
+      });
+      if (newOnes.length) {
+        const merged = [...newOnes, ...existing].slice(0, 50);
+        localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(merged));
+        console.log('[punaHub] ✅ Pulled ' + newOnes.length + ' notifications from Supabase');
+      }
+    } catch(e) {
+      console.warn('[punaHub] pullNotifs failed:', e.message);
+    }
+  }
+
+  // ── Debounce helper ─────────────────────────────────────
+  const timers = {};
+  function debounce(key, fn, ms=1500) {
+    clearTimeout(timers[key]);
+    timers[key] = setTimeout(fn, ms);
+  }
+
+  // ── AUTO-SYNC hook — called by saveUsers/saveReels/saveFollowData ──
+  window.__cloudSync = async function(type, data) {
+    debounce(type, async () => {
+      try {
+        if (type === 'users') {
+          for (const email in data) {
+            const u = { ...data[email] };
+            // Upload avatar to Supabase Storage if base64
+            if (u.avatar && u.avatar.startsWith('data:')) {
+              try {
+                u.avatar = await uploadToStorage(`avatars/${email.replace(/[^a-z0-9]/gi,'_')}.jpg`, u.avatar, 'image/jpeg');
+                // Update in-memory avatar URL
+                if (window.__sbData.users[email]) window.__sbData.users[email].avatar = u.avatar;
+                // Immediately sync new cloud URL back to session + localStorage
+                data[email].avatar = u.avatar;
+                const _sess = typeof getSession === 'function' ? getSession() : null;
+                if (_sess && _sess.email === email) {
+                  _sess.avatar = u.avatar;
+                  if (typeof setSession === 'function') setSession(_sess);
+                  if (typeof currentUser !== 'undefined') currentUser.avatar = u.avatar;
+                }
+                // Refresh all avatar images in DOM instantly
+                document.querySelectorAll('#nav-avatar-img, #profile-avatar-img, .nav-avatar img, .profile-avatar-big img').forEach(function(el) {
+                  if (el) { el.src = u.avatar; }
+                });
+                // Persist updated cloud URL into localStorage users store
+                try {
+                  const _users = typeof getUsers === 'function' ? getUsers() : {};
+                  if (_users[email]) { _users[email].avatar = u.avatar; if (typeof saveUsers === 'function') saveUsers(_users); }
+                } catch(e2) {}
+              } catch(e) { console.warn('Avatar upload failed:', e.message); }
+            }
+            window.__sbData.users[email] = u;
+            await sb.from('punahub_users').upsert({ email, data: u }, { onConflict:'email' });
+          }
+          console.log('AUTO-SAVED users to Supabase');
+
+        } else if (type === 'reels') {
+          const reels = Array.isArray(data) ? data : [];
+          window.__sbData.reels = reels;
+
+          // Delete removed reels from cloud
+          const { data: cloudReels } = await sb.from('punahub_reels').select('id');
+          const cloudIds = new Set((cloudReels||[]).map(r => r.id));
+          const localIds = new Set(reels.map(r => r.id));
+          for (const id of cloudIds) {
+            if (!localIds.has(id)) {
+              await sb.from('punahub_reels').delete().eq('id', id);
+              // Also delete from storage
+              await sb.storage.from('punahub').remove([`reels/${id}.mp4`, `posters/${id}.jpg`]);
+            }
+          }
+
+          // Upsert each reel — upload video to Cloudinary if base64
+          for (const r of reels) {
+            if (!r || !r.id) continue;
+            const rToSave = { ...r };
+
+            if (r.videoDataURL && r.videoDataURL.startsWith('data:')) {
+              // Try Cloudinary first
+              if (window.videoFile && window.CLOUDINARY_PRESET !== 'PASTE_PRESET_NAME') {
+                try {
+                  const result = await uploadVideoToCloudinary(window.videoFile, r.id);
+                  if (result) {
+                    rToSave.videoDataURL = result.videoUrl;
+                    rToSave.storageUrl   = result.videoUrl;
+                    rToSave.poster       = result.posterUrl;
+                  }
+                } catch(e) { console.warn('Cloudinary failed, trying Supabase Storage:', e.message); }
+              }
+              // Fallback to Supabase Storage
+              if (rToSave.videoDataURL && rToSave.videoDataURL.startsWith('data:')) {
+                try {
+                  rToSave.videoDataURL = await uploadToStorage(`reels/${r.id}.mp4`, r.videoDataURL, 'video/mp4');
+                  rToSave.storageUrl   = rToSave.videoDataURL;
+                  if (r.poster && r.poster.startsWith('data:'))
+                    rToSave.poster = await uploadToStorage(`posters/${r.id}.jpg`, r.poster, 'image/jpeg');
+                } catch(e) { console.warn('Storage upload failed:', e.message); }
+              }
+            }
+
+            await sb.from('punahub_reels').upsert({ id: r.id, data: rToSave }, { onConflict:'id' });
+          }
+          console.log('AUTO-SAVED reels to Supabase');
+
+        } else if (type === 'follows') {
+          window.__sbData.follows = data;
+          for (const email in data) {
+            await sb.from('punahub_follows').upsert({ email, data: data[email] }, { onConflict:'email' });
+          }
+          console.log('AUTO-SAVED follows to Supabase');
+
+        } else if (type === 'settings') {
+          window.__sbData.settings = data;
+          const xml     = sessionStorage.getItem('currentUser_xml') || '';
+          const sdoc    = new DOMParser().parseFromString(xml, 'application/xml');
+          const emailEl = sdoc.querySelector('email');
+          if (emailEl && emailEl.textContent) {
+            await sb.from('punahub_settings').upsert({ email: emailEl.textContent, data }, { onConflict:'email' });
+          }
+          console.log('AUTO-SAVED settings to Supabase');
+        }
+
+        // Flash sync dot
+        const dot = document.getElementById('sb-sync-dot');
+        if (dot) { dot.style.opacity='1'; setTimeout(()=>dot.style.opacity='0',800); }
+
+      } catch(err) {
+        console.warn('Supabase sync failed:', err.message);
+      }
+    });
+  };
+
+  // ── Override getUsers/getReels/getFollowData to read from __sbData ──
+  window.getUsers     = () => window.__sbData.users   || {};
+  window.getReels     = () => window.__sbData.reels   || [];
+  window.getFollowData= () => window.__sbData.follows || {};
+
+  // ══════════════════════════════════════════════════════════
+  //  REALTIME NOTIFICATIONS — instant cross-device delivery
+  //  Uses Supabase Realtime to push notifications to other
+  //  devices the moment someone follows/likes/comments.
+  //  No polling needed — arrives in < 200ms on same network.
+  // ══════════════════════════════════════════════════════════
+
+  // Push a notification to another user via Supabase (cross-device)
+  window.__pushCloudNotif = async function(toEmail, notif) {
+    if (!toEmail || !notif) return;
+
+    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+    var title  = 'punaHub — ' + (notif.fromNickname || 'Someone');
+    var body   = notif.message || msgMap[notif.type] || 'New activity';
+    var tag    = 'puna-' + (notif.type || 'notif') + '-' + (notif.fromEmail || '');
+    var cu     = window.__punaActiveUser;
+
+    // ── Always send Web Push FIRST (does not need sb) ────────
+    // Only send to recipient — never back to sender
+    if (window.__punaPush && (!cu || cu.email !== toEmail)) {
+      window.__punaPush.send(toEmail, title, body, tag, '');
+    }
+
+    // ── Store in Supabase (wait for sb if not ready yet) ─────
+    var _doInsert = async function() {
+      if (!window.sb) return;
+      try {
+        await window.sb.from('punahub_notifs').insert({
+          to_email:   toEmail,
+          from_email: notif.fromEmail || '',
+          type:       notif.type      || 'notif',
+          payload:    notif,
+          created_at: new Date().toISOString()
+        });
+        console.log('[punaHub] ✅ Notif saved to Supabase for', toEmail);
+      } catch(e) {
+        console.warn('[punaHub] Supabase notif insert failed:', e.message);
+      }
+    };
+
+    if (window.sb) {
+      _doInsert();
+    } else {
+      // Supabase not ready yet — wait up to 5s
+      var _waited = 0;
+      var _waiter = setInterval(function() {
+        _waited += 200;
+        if (window.sb) { clearInterval(_waiter); _doInsert(); }
+        else if (_waited >= 5000) { clearInterval(_waiter); console.warn('[punaHub] sb never ready for notif insert'); }
+      }, 200);
+    }
+  };
+
+  // Subscribe to realtime notifications for the current user
+  function subscribeToNotifs(userEmail) {
+    if (!userEmail || !sb) return;
+    try {
+      sb.channel('punahub-notifs-' + userEmail.replace(/[^a-z0-9]/gi, '_'))
+        .on('postgres_changes', {
+          event:  'INSERT',
+          schema: 'public',
+          table:  'punahub_notifs',
+          filter: 'to_email=eq.' + userEmail
+        }, function(payload) {
+          try {
+            var row = payload.new;
+            if (!row || !row.payload) return;
+            var notif = (typeof row.payload === 'string') ? JSON.parse(row.payload) : row.payload;
+            if (!notif || !notif.id) return;
+
+            // ── Enrich: fetch fresh nickname+avatar from Supabase if missing/base64 ──
+            async function enrichAndShow(n) {
+              if (n.fromEmail && (!n.fromAvatar || n.fromAvatar.startsWith('data:'))) {
+                try {
+                  var uRes = await sb.from('punahub_users').select('data').eq('email', n.fromEmail).single();
+                  if (uRes && uRes.data && uRes.data.data) {
+                    var ud = uRes.data.data;
+                    if (ud.nickname && !n.fromNickname) n.fromNickname = ud.nickname;
+                    if (ud.nickname) n.fromNickname = ud.nickname; // always use latest
+                    if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
+                    n.message = n.fromNickname + ' started following you';
+                  }
+                } catch(e2) {}
+              }
+              // Write to localStorage
+              var existing = [];
+              try { existing = JSON.parse(localStorage.getItem('punahub_notifs_' + userEmail) || '[]'); } catch(e) {}
+              if (existing.some(function(x){ return x.id === n.id; })) {
+                // Already stored — skip toast to avoid duplicate popup
+                return;
+              }
+              existing.unshift(n);
+              localStorage.setItem('punahub_notifs_' + userEmail, JSON.stringify(existing.slice(0, 50)));
+              if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, userEmail);
+              console.log('[punaHub] 🔔 Realtime notif:', n.type, 'from', n.fromNickname, '| avatar:', n.fromAvatar ? 'yes' : 'none');
+            }
+            enrichAndShow(notif);
+          } catch(e) {
+            console.warn('[punaHub] Realtime notif error:', e.message);
+          }
+        })
+        .subscribe(function(status) {
+          console.log('[punaHub] Notifs realtime:', status);
+        });
+    } catch(e) {
+      console.warn('[punaHub] Realtime subscribe failed:', e.message);
+    }
+  }
+
+  // Called after login — pull existing + start listening for this user's notifications
+  window.__startNotifRealtime = async function(userEmail) {
+    // First pull all existing notifications from Supabase cloud
+    await pullNotifs(userEmail);
+    // Then update badge and start realtime subscription
+    if (typeof updateNotifBadge === 'function') updateNotifBadge(userEmail);
+    subscribeToNotifs(userEmail);
+  };
+
+  // ── Realtime: follow changes → update all devices instantly ──
+  try {
+    sb.channel('punahub-follows-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_follows' }, async function(payload) {
+        try {
+          const row = payload.new || payload.old;
+          if (!row || !row.email) return;
+          // Update in-memory cache
+          if (payload.eventType === 'DELETE') {
+            delete (window.__sbData.follows || {})[row.email];
+          } else {
+            (window.__sbData.follows || {})[row.email] = row.data;
+          }
+          // Write to localStorage so live engine triggers handleFollowChange
+          localStorage.setItem('punahub_follow', JSON.stringify(window.__sbData.follows || {}));
+          // Refresh profile stats on screen
+          if (typeof refreshProfileStats === 'function') refreshProfileStats();
+          console.log('[punaHub] ⚡ Realtime follow update for:', row.email);
+        } catch(e) {}
+      })
+      .subscribe();
+  } catch(e) { console.warn('[punaHub] follow realtime subscribe failed:', e.message); }
+
+  // ── Realtime: reels changes → update feed on all devices ──
+  try {
+    sb.channel('punahub-reels-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_reels' }, async function(payload) {
+        try {
+          const reels = window.__sbData.reels || [];
+          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
+            const r = payload.new;
+            if (!r || !r.id) return;
+            const idx = reels.findIndex(x => x.id === r.id);
+            const reelData = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+            if (idx === -1) reels.unshift(reelData);
+            else reels[idx] = reelData;
+          } else if (payload.eventType === 'DELETE') {
+            const r = payload.old;
+            if (r && r.id) window.__sbData.reels = reels.filter(x => x.id !== r.id);
+          }
+          // Write to localStorage so live engine picks it up
+          try {
+            const lean = (window.__sbData.reels || []).map(r => {
+              const c = Object.assign({}, r);
+              if (c.videoDataURL && c.videoDataURL.startsWith('data:')) delete c.videoDataURL;
+              if (c.poster && c.poster.startsWith('data:')) delete c.poster;
+              return c;
+            });
+            localStorage.setItem('punahub_reels', JSON.stringify(lean));
+          } catch(e) {}
+          if (typeof currentUser !== 'undefined' && currentUser) {
+            if (payload.eventType === 'UPDATE' && typeof patchReelCard === 'function') {
+              // Patch in-place: update like/comment counts without resetting videos
+              var rData = typeof (payload.new || {}).data === 'string'
+                ? JSON.parse(payload.new.data) : (payload.new || {}).data;
+              if (rData) patchReelCard(rData);
+            } else if (payload.eventType === 'INSERT' && typeof renderFeed === 'function') {
+              renderFeed();
+            } else if (payload.eventType === 'DELETE') {
+              var delId = ((payload.old || {}).data || {}).id || (payload.old || {}).id;
+              if (delId) {
+                var c = document.querySelector('.reel-card[data-id="' + delId + '"]');
+                if (c) { c.style.transition='opacity 0.4s'; c.style.opacity='0'; setTimeout(function(){ if(c.parentNode)c.parentNode.removeChild(c); },420); }
+              }
+            }
+          }
+          console.log('[punaHub] ⚡ Realtime reel update:', payload.eventType);
+        } catch(e) {}
+      })
+      .subscribe();
+  } catch(e) { console.warn('[punaHub] reels realtime subscribe failed:', e.message); }
+
+  // ── Sync indicator dot ──────────────────────────────────
+  const dot = document.createElement('div');
+  dot.id = 'sb-sync-dot';
+  dot.style.cssText = `position:fixed;top:14px;right:14px;width:9px;height:9px;
+    border-radius:50%;background:#3ecf8e;opacity:0;
+    transition:opacity 0.3s;z-index:9999;box-shadow:0 0 8px #3ecf8e;pointer-events:none`;
+  const frame = document.getElementById('app-frame');
+  if (frame) frame.appendChild(dot);
+
+  // ── Re-sync helper — pulls fresh data and refreshes UI only if changed ──
+  var _lastReelHash  = '';
+  var _lastFollowHash = '';
+  var _lastNotifHash  = '';
+
+  async function resync(reason) {
+    try {
+      console.log('[punaHub] Re-syncing from cloud:', reason);
+      const before = {
+        reels:   JSON.stringify(window.__sbData.reels   || []),
+        follows: JSON.stringify(window.__sbData.follows || {}),
+        users:   JSON.stringify(window.__sbData.users   || {})
+      };
+
+      const pulled = await pullData();
+      if (!pulled) return;
+
+      const after = {
+        reels:   JSON.stringify(window.__sbData.reels   || []),
+        follows: JSON.stringify(window.__sbData.follows || {}),
+        users:   JSON.stringify(window.__sbData.users   || {})
+      };
+
+      const cu = (typeof currentUser !== 'undefined') ? currentUser : null;
+      if (!cu) return;
+
+      // Only re-render what actually changed
+      if (after.reels !== before.reels) {
+        if (typeof renderFeed === 'function') renderFeed();
+      }
+      if (after.follows !== before.follows || after.users !== before.users) {
+        // Update stat counters for whoever is currently on screen
+        const fd = window.__sbData.follows || {};
+        var viewedEmail = cu.email;
+        const profileEmailEl = document.getElementById('profile-email');
+        if (profileEmailEl && profileEmailEl.textContent && profileEmailEl.textContent !== '—') {
+          viewedEmail = profileEmailEl.textContent.trim();
+        }
+        const viewedData = fd[viewedEmail] || {};
+        const elF = document.getElementById('stat-followers');
+        const elG = document.getElementById('stat-following');
+        if (elF) elF.textContent = (viewedData.followers || []).length;
+        if (elG) elG.textContent = (viewedData.following || []).length;
+      }
+
+      // Flash the sync dot green to signal fresh data arrived
+      dot.style.background = '#3ecf8e';
+      dot.style.opacity = '1';
+      setTimeout(function() { dot.style.opacity = '0'; }, 1200);
+
+    } catch(e) {
+      console.warn('[punaHub] Resync failed:', e.message);
+    }
+  }
+
+  // Re-pull when network comes back (WiFi ↔ mobile data switch fires offline then online)
+  window.addEventListener('online', function() {
+    resync('network reconnected');
+  });
+
+  // Re-pull when user returns to the app after being away
+  var _lastVisible = Date.now();
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+      var away = Date.now() - _lastVisible;
+      if (away > 10000) resync('returned after ' + Math.round(away / 1000) + 's');
+    } else {
+      _lastVisible = Date.now();
+    }
+  });
+
+  // ── Periodic resync every 8s — catches missed Realtime events ──
+  // Realtime can drop when switching WiFi/mobile or backgrounding.
+  // This is a lightweight fallback: only re-renders if data actually changed.
+  async function periodicResync() {
+    if (document.hidden) return; // don't poll while backgrounded
+    var cu = (typeof currentUser !== 'undefined') ? currentUser : null;
+    if (!cu) return;
+    try {
+      // Check follows
+      const { data: fRows } = await sb.from('punahub_follows').select('email, data');
+      if (fRows && fRows.length) {
+        var newFollows = {};
+        fRows.forEach(function(r){ newFollows[r.email] = r.data; });
+        var newStr = JSON.stringify(newFollows);
+        var curStr = JSON.stringify(window.__sbData.follows || {});
+        if (newStr !== curStr) {
+          window.__sbData.follows = newFollows;
+          localStorage.setItem('punahub_follow', newStr);
+          if (typeof refreshProfileStats === 'function') refreshProfileStats();
+        }
+      }
+      // Check latest reels (just top 20 for speed)
+      const { data: rRows } = await sb.from('punahub_reels').select('id, data').order('id', { ascending: false }).limit(20);
+      if (rRows && rRows.length) {
+        var changed = false;
+        rRows.forEach(function(r) {
+          var rData = typeof r.data === 'string' ? JSON.parse(r.data) : r.data;
+          if (!rData) return;
+          var existing = (window.__sbData.reels || []).find(function(x){ return x.id === r.id; });
+          if (!existing) {
+            (window.__sbData.reels || []).unshift(rData);
+            changed = true;
+          } else {
+            // Only sync metadata — never overwrite likes/comments which are
+            // managed live by the dedicated punahub_likes/punahub_comments handlers
+            var fieldsToSync = ['title', 'desc', 'description', 'videoURL', 'storageUrl', 'poster', 'nickname', 'avatar', 'email', 'createdAt', 'private'];
+            fieldsToSync.forEach(function(f){ if (rData[f] !== undefined) existing[f] = rData[f]; });
+          }
+        });
+        if (changed && typeof renderFeed === 'function') renderFeed();
+      }
+      // ── Live likes sync ───────────────────────────────────
+      const { data: lkRows } = await sb.from('punahub_likes').select('reel_id, user_email');
+      if (lkRows) {
+        var reelsArr = window.getReels ? window.getReels() : [];
+        var changed = false;
+        // Build new likedBy map
+        var likeMap = {};
+        lkRows.forEach(function(lk) {
+          if (!likeMap[lk.reel_id]) likeMap[lk.reel_id] = [];
+          likeMap[lk.reel_id].push(lk.user_email);
+        });
+        reelsArr.forEach(function(r) {
+          var newLikedBy = likeMap[r.id] || [];
+          var oldCount = (r.likes || 0);
+          var newCount = newLikedBy.length;
+          if (oldCount !== newCount || JSON.stringify((r.likedBy||[]).sort()) !== JSON.stringify(newLikedBy.slice().sort())) {
+            r.likedBy = newLikedBy;
+            r.likes   = newCount;
+            changed = true;
+            if (typeof patchReelCard === 'function') patchReelCard(r);
+          }
+        });
+        if (changed) {
+          if (window.__sbData) window.__sbData.reels = reelsArr;
+          try {
+            var lean = reelsArr.map(function(r){ var c=Object.assign({},r); delete c.videoDataURL; delete c.poster; return c; });
+            localStorage.setItem('punahub_reels', JSON.stringify(lean));
+          } catch(e) {}
+        }
+      }
+
+      // ── Live comments sync ────────────────────────────────
+      const { data: cmtRows } = await sb.from('punahub_comments').select('*').order('created_at', { ascending: true });
+      if (cmtRows) {
+        var reelsArr2 = window.getReels ? window.getReels() : [];
+        var cmtChanged = false;
+        // Build comment map per reel
+        var cmtMap = {};
+        cmtRows.forEach(function(sc) {
+          if (!cmtMap[sc.reel_id]) cmtMap[sc.reel_id] = [];
+          cmtMap[sc.reel_id].push({ id: sc.id, parentId: sc.parent_id||null, email: sc.user_email, nickname: sc.user_nickname||'', avatar: sc.user_avatar||'', text: sc.text, likes: sc.likes||0, likedBy: sc.liked_by||[], createdAt: sc.created_at ? new Date(sc.created_at).getTime() : Date.now() });
+        });
+        reelsArr2.forEach(function(r) {
+          var newComments = cmtMap[r.id] || [];
+          if ((r.comments||[]).length !== newComments.length) {
+            r.comments = newComments;
+            cmtChanged = true;
+            if (typeof patchReelCard === 'function') patchReelCard(r);
+          }
+        });
+        if (cmtChanged) {
+          if (window.__sbData) window.__sbData.reels = reelsArr2;
+          try {
+            var lean2 = reelsArr2.map(function(r){ var c=Object.assign({},r); delete c.videoDataURL; delete c.poster; return c; });
+            localStorage.setItem('punahub_reels', JSON.stringify(lean2));
+          } catch(e) {}
+          // Refresh open comment panel if active
+          if (typeof renderComments === 'function' && typeof currentReelId !== 'undefined' && currentReelId) {
+            renderComments(currentReelId);
+          }
+        }
+      }
+
+      // Check notifications
+      const { data: nRows } = await sb.from('punahub_notifs')
+        .select('payload, created_at')
+        .eq('to_email', cu.email)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      if (nRows && nRows.length) {
+        var existing2 = [];
+        try { existing2 = JSON.parse(localStorage.getItem('punahub_notifs_' + cu.email) || '[]'); } catch(e) {}
+        var existingIds = new Set(existing2.map(function(n){ return n.id; }));
+        var newOnes = [];
+        nRows.forEach(function(row) {
+          var n = (typeof row.payload === 'string') ? JSON.parse(row.payload) : row.payload;
+          if (n && n.id && !existingIds.has(n.id)) newOnes.push(n);
+        });
+        if (newOnes.length) {
+          var merged = newOnes.concat(existing2).slice(0, 50);
+          localStorage.setItem('punahub_notifs_' + cu.email, JSON.stringify(merged));
+          if (typeof window.showLiveNotifToast === 'function') {
+            window.showLiveNotifToast(newOnes[0], cu.email);
+          }
+        }
+      }
+    } catch(e) {}
+  }
+  setInterval(periodicResync, 3000);
+
+  // ── FAST NOTIFICATION POLLER — checks Supabase every 3s ──────────────
+  // This is the primary live-notification mechanism.
+  // Supabase Realtime fires instantly; this is the fallback safety net.
+  var _lastNotifCheck = 0;
+  var _seenNotifIds   = new Set();
+
+  async function pollNotifs() {
+    if (!sb) return;
+    var cu = null;
+    try { cu = window.__punaActiveUser; } catch(e) {}
+    if (!cu || !cu.email) return;
+
+    // Seed seen-IDs on first run so old notifications don't ring the bell
+    if (_lastNotifCheck === 0) {
+      try {
+        var old = JSON.parse(localStorage.getItem('punahub_notifs_' + cu.email) || '[]');
+        old.forEach(function(n){ if (n.id) _seenNotifIds.add(n.id); });
+      } catch(e) {}
+      _lastNotifCheck = Date.now();
+      return; // skip actual query on first run — just seed
+    }
+
+    try {
+      var since = new Date(_lastNotifCheck - 500).toISOString(); // 0.5s overlap to avoid gaps
+      _lastNotifCheck = Date.now();
+
+      var result = await sb
+        .from('punahub_notifs')
+        .select('payload, created_at')
+        .eq('to_email', cu.email)
+        .gt('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (!result.data || !result.data.length) return;
+
+      var freshOnes = [];
+      result.data.forEach(function(row) {
+        var n = (typeof row.payload === 'string') ? JSON.parse(row.payload) : row.payload;
+        if (!n || !n.id) return;
+        if (_seenNotifIds.has(n.id)) return;
+        _seenNotifIds.add(n.id);
+        freshOnes.push(n);
+      });
+
+      if (!freshOnes.length) return;
+
+      // Merge into localStorage
+      var existing = [];
+      try { existing = JSON.parse(localStorage.getItem('punahub_notifs_' + cu.email) || '[]'); } catch(e) {}
+      var existingIds = new Set(existing.map(function(x){ return x.id; }));
+      var toAdd = freshOnes.filter(function(n){ return !existingIds.has(n.id); });
+      if (!toAdd.length) return;
+
+      var merged = toAdd.concat(existing).slice(0, 50);
+      localStorage.setItem('punahub_notifs_' + cu.email, JSON.stringify(merged));
+
+      // 🔔 Enrich avatar from Supabase then show popup
+      var _notifToShow = toAdd[0];
+      async function enrichPollNotif(n, email) {
+        if (n.fromEmail && (!n.fromAvatar || n.fromAvatar.startsWith('data:'))) {
+          try {
+            var uRes = await sb.from('punahub_users').select('data').eq('email', n.fromEmail).single();
+            if (uRes && uRes.data && uRes.data.data) {
+              var ud = uRes.data.data;
+              if (ud.nickname) { n.fromNickname = ud.nickname; n.message = ud.nickname + ' started following you'; }
+              if (ud.avatar && !ud.avatar.startsWith('data:')) n.fromAvatar = ud.avatar;
+            }
+          } catch(e2) {}
+        }
+        if (typeof window.showLiveNotifToast === 'function') window.showLiveNotifToast(n, email);
+      }
+      enrichPollNotif(_notifToShow, cu.email);
+
+    } catch(e) { /* silent — network may be unavailable */ }
+  }
+
+  setInterval(pollNotifs, 500);
+
+  // ── Startup ─────────────────────────────────────────────
+  try {
+    const pulled = await pullData();
+
+    if (pulled) {
+      toast('🟢 Supabase connected — data loaded from cloud!', true);
+    } else {
+      toast('🟢 Supabase ready — all data saves to cloud instantly', true);
+    }
+
+    // Refresh UI with cloud data only if user is already logged in
+    if (typeof currentUser !== 'undefined' && currentUser) {
+      if (typeof renderFeed === 'function') renderFeed();
+      if (typeof refreshProfileStats === 'function') setTimeout(refreshProfileStats, 100);
+      if (typeof updateNotifBadge === 'function') setTimeout(function(){ updateNotifBadge(currentUser.email); }, 200);
+    }
+
+    console.log('=== SUPABASE AUTO-SYNC ACTIVE ===');
+    console.log('Every action saves to cloud instantly!');
+    console.log('SQL to run once in Supabase SQL Editor:');
+    console.log(`
+create table if not exists punahub_users (email text primary key, data jsonb);
+create table if not exists punahub_reels (id text primary key, data jsonb);
+create table if not exists punahub_follows (email text primary key, data jsonb);
+create table if not exists punahub_settings (email text primary key, data jsonb);
+create table if not exists punahub_push_subs (
+  id bigint generated always as identity primary key,
+  user_email text not null,
+  endpoint text not null,
+  p256dh text,
+  auth text,
+  updated_at timestamptz default now(),
+  unique(user_email, endpoint)
+);
+alter table punahub_push_subs disable row level security;
+create table if not exists punahub_notifs (
+  id bigint generated always as identity primary key,
+  to_email text not null,
+  from_email text,
+  type text,
+  payload jsonb,
+  created_at timestamptz default now()
+);
+create table if not exists punahub_likes (
+  id text primary key,
+  reel_id text not null,
+  user_email text not null,
+  user_nickname text,
+  user_avatar text,
+  created_at timestamptz default now()
+);
+create table if not exists punahub_comments (
+  id text primary key,
+  reel_id text not null,
+  parent_id text,
+  user_email text not null,
+  user_nickname text,
+  user_avatar text,
+  text text not null,
+  likes int default 0,
+  liked_by jsonb default '[]',
+  created_at timestamptz default now()
+);
+alter table punahub_users disable row level security;
+alter table punahub_reels disable row level security;
+alter table punahub_follows disable row level security;
+alter table punahub_settings disable row level security;
+alter table punahub_notifs disable row level security;
+alter table punahub_likes disable row level security;
+alter table punahub_comments disable row level security;
+alter publication supabase_realtime add table punahub_notifs;
+alter publication supabase_realtime add table punahub_follows;
+alter publication supabase_realtime add table punahub_reels;
+alter publication supabase_realtime add table punahub_likes;
+alter publication supabase_realtime add table punahub_comments;
+insert into storage.buckets (id,name,public) values ('punahub','punahub',true) on conflict do nothing;
+    `);
+
+  } catch(err) {
+    console.error('Supabase error:', err.message);
+    // Don't show raw technical errors to users
+  }
+
+})();
+(function() {
+  var COOKIE_KEY = 'punahub_cookie_consent';
+  function getCookieConsent() { try { return localStorage.getItem(COOKIE_KEY); } catch(e) { return null; } }
+  function setCookieConsent(val) { try { localStorage.setItem(COOKIE_KEY, val); } catch(e) {} }
+  function hideBanner() {
+    var b = document.getElementById('cookie-banner');
+    if (!b) return;
+    b.classList.remove('show');
+    setTimeout(function() { b.style.display = 'none'; }, 600);
+  }
+  window.punaCookieAccept = function() { setCookieConsent('accepted'); hideBanner(); };
+  window.punaCookieDecline = function() { setCookieConsent('declined'); hideBanner(); };
+  function init() {
+    if (getCookieConsent()) return;
+    var b = document.getElementById('cookie-banner');
+    if (!b) return;
+    setTimeout(function() { b.classList.add('show'); }, 1000);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else { init(); }
+})();
+(function () {
+  'use strict';
+
+  // ══════════════════════════════════════════════════════════
+  //  INTERCEPT localStorage.setItem
+  //  This is the KEY fix — works regardless of function scope
+  //  or whether functions are on window or inside closures.
+  // ══════════════════════════════════════════════════════════
+  var _origSetItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function(key, value) {
+    _origSetItem.call(this, key, value);
+    // Only react to our app's keys
+    if (this === localStorage) {
+      try { onStorageWrite(key, value); } catch(e) {}
+    }
+  };
+
+  // ── State snapshots ──────────────────────────────────────
+  var snap = {
+    reels:  localStorage.getItem('punahub_reels')  || '[]',
+    follow: localStorage.getItem('punahub_follow') || '{}',
+    notifs: {}   // email → JSON string
+  };
+  var pendingNewReels = [];
+  var pollTimer       = null;
+  var pill            = null;
+  var syncDot         = null;
+
+  // ── BroadcastChannel for cross-tab instant sync ──────────
+  var bc = null;
+  try {
+    if ('BroadcastChannel' in window) {
+      bc = new BroadcastChannel('punahub_live_v2');
+      bc.onmessage = function(e) {
+        if (!e.data) return;
+        if (e.data.key) onStorageWrite(e.data.key, e.data.val, true);
+      };
+    }
+  } catch(e) {}
+
+  function bcBroadcast(key, val) {
+    try { if (bc) bc.postMessage({ key: key, val: val }); } catch(e) {}
+  }
+
+  // ── Central dispatcher ───────────────────────────────────
+  function onStorageWrite(key, val, fromOtherTab) {
+    if (key === 'punahub_reels') {
+      if (val === snap.reels) return;
+      var prev = snap.reels;
+      snap.reels = val;
+      if (!fromOtherTab) bcBroadcast(key, val);
+      handleReelsChange(prev, val, !fromOtherTab);
+      flashSyncDot();
+    } else if (key === 'punahub_follow') {
+      if (val === snap.follow) return;
+      snap.follow = val;
+      if (!fromOtherTab) bcBroadcast(key, val);
+      handleFollowChange(val);
+      flashSyncDot();
+    } else if (key && key.startsWith('punahub_notifs_')) {
+      var email = key.slice('punahub_notifs_'.length);
+      if (val === (snap.notifs[email] || '[]')) return;
+      snap.notifs[email] = val;
+      if (!fromOtherTab) bcBroadcast(key, val);
+      handleNotifsChange(email);
+      flashSyncDot();
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  REELS — new posts, likes, comment counts, deletions
+  // ══════════════════════════════════════════════════════════
+  function handleReelsChange(prevJSON, nextJSON, isSameTab) {
+    var prev, next;
+    try { prev = JSON.parse(prevJSON); } catch(e) { prev = []; }
+    try { next = JSON.parse(nextJSON); } catch(e) { return; }
+
+    var prevMap = {};
+    prev.forEach(function(r){ prevMap[r.id] = r; });
+    var nextMap = {};
+    next.forEach(function(r){ nextMap[r.id] = r; });
+
+    // 1. New reels — show pill if from another tab, insert immediately if same tab
+    next.forEach(function(r) {
+      if (!prevMap[r.id]) {
+        if (!isSameTab) {
+          pendingNewReels.push(r);
+        }
+        // same-tab: renderFeed already ran, skip
+
+        // 🔔 Show topbar pop-up if the poster is someone we follow
+        var cu = getCU();
+        if (cu && r.email && r.email !== cu.email) {
+          try {
+            var fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}');
+            var myFollowing = ((fd[cu.email] || {}).following || []);
+            if (myFollowing.includes(r.email)) {
+              // Look up poster details
+              var users = {};
+              try { users = JSON.parse(localStorage.getItem('punahub_users_xml') ? '{}' : '{}'); } catch(e) {}
+              // Get nickname/avatar from the reel itself or from stored users
+              var posterNickname = r.nickname || r.email.split('@')[0];
+              var posterAvatar   = r.avatar || '';
+              // Try to get richer info from users store
+              try {
+                var storedUsers = {};
+                var xmlRaw = localStorage.getItem('punahub_users_xml');
+                // Parse from reels posted by this user (we likely have avatar in other reels)
+                var allReels = JSON.parse(localStorage.getItem('punahub_reels') || '[]');
+                var prevReel = allReels.find(function(x){ return x.email === r.email && x.id !== r.id && x.nickname; });
+                if (prevReel) { posterNickname = prevReel.nickname || posterNickname; posterAvatar = prevReel.avatar || posterAvatar; }
+              } catch(e2) {}
+              showFollowedUserPostToast(posterNickname, posterAvatar, r);
+            }
+          } catch(e) {}
+        }
+      }
+    });
+    if (pendingNewReels.length > 0) showNewPill();
+
+    // 2. Updated reels — patch likes + comment counts in-place
+    next.forEach(function(r) {
+      var old = prevMap[r.id];
+      if (!old) return;
+      var likesChanged    = (r.likes || 0)              !== (old.likes || 0);
+      var commentsChanged = (r.comments || []).length   !== (old.comments || []).length;
+      if (likesChanged || commentsChanged) patchReelCard(r);
+    });
+
+    // 3. Deleted reels — fade out
+    prev.forEach(function(r) {
+      if (!nextMap[r.id]) {
+        var card = document.querySelector('.reel-card[data-id="' + r.id + '"]');
+        if (card) {
+          card.style.transition = 'opacity 0.4s, transform 0.4s';
+          card.style.opacity = '0';
+          card.style.transform = 'scale(0.92)';
+          setTimeout(function(){ if (card.parentNode) card.parentNode.removeChild(card); }, 420);
+        }
+      }
+    });
+  }
+
+  function patchReelCard(r) {
+    var card = document.querySelector('.reel-card[data-id="' + r.id + '"]');
+    if (!card) return;
+    var cu = getCU();
+
+    // ── Like button — find by data-action="like" ──────────
+    var likeBtn = card.querySelector('[data-action="like"]') || card.querySelector('.reel-action-btn');
+    if (likeBtn) {
+      var likeSpan = likeBtn.querySelector('span');
+      var newLikes = fmtN(r.likes || 0);
+      if (likeSpan && likeSpan.textContent !== newLikes) {
+        likeSpan.textContent = newLikes;
+        likeSpan.style.transition = 'transform 0.2s, color 0.2s';
+        likeSpan.style.transform = 'scale(1.5)';
+        likeSpan.style.color = '#c9f542';
+        setTimeout(function(){ likeSpan.style.transform = ''; likeSpan.style.color = ''; }, 260);
+      }
+      if (cu) {
+        var nowLiked = (r.likedBy || []).includes(cu.email);
+        likeBtn.classList.toggle('liked', nowLiked);
+        var svgPath = likeBtn.querySelector('svg path');
+        if (svgPath) svgPath.setAttribute('fill', nowLiked ? 'currentColor' : 'none');
+      }
+    }
+
+    // ── Comment button — find by data-action="comment" ────
+    var cmtBtn = card.querySelector('[data-action="comment"]');
+    if (cmtBtn) {
+      var cmtSpan = cmtBtn.querySelector('span');
+      var newCmts = fmtN((r.comments || []).length);
+      if (cmtSpan && cmtSpan.textContent !== newCmts) {
+        cmtSpan.textContent = newCmts;
+        cmtSpan.style.transition = 'transform 0.2s, color 0.2s';
+        cmtSpan.style.transform = 'scale(1.5)';
+        cmtSpan.style.color = '#42f5d5';
+        setTimeout(function(){ cmtSpan.style.transform = ''; cmtSpan.style.color = ''; }, 260);
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  FOLLOW — follower/following counts + all follow buttons
+  // ══════════════════════════════════════════════════════════
+  function handleFollowChange(newJSON) {
+    var cu = getCU();
+    if (!cu) return;
+    var fd;
+    try { fd = JSON.parse(newJSON); } catch(e) { return; }
+
+    // Find out whose profile is currently displayed on screen
+    // (could be currentUser's own profile OR another user's profile)
+    var viewedEmail = cu.email;
+    var profileEmailEl = document.getElementById('profile-email');
+    if (profileEmailEl && profileEmailEl.textContent && profileEmailEl.textContent !== '—') {
+      viewedEmail = profileEmailEl.textContent.trim();
+    }
+
+    var viewedData = fd[viewedEmail] || {};
+    var followers  = (viewedData.followers || []).length;
+    var following  = (viewedData.following || []).length;
+
+    // Update stat counters for whoever is on screen
+    var elF = document.getElementById('stat-followers');
+    var elG = document.getElementById('stat-following');
+    if (elF) { elF.textContent = followers; animateStat(elF); }
+    if (elG) { elG.textContent = following; animateStat(elG); }
+
+    // Update every follow button in the DOM
+    document.querySelectorAll('.follow-btn[data-target], .hub-follow-btn[data-target]').forEach(function(btn) {
+      var target = btn.dataset.target;
+      if (!target) return;
+      var nowFollowing = ((fd[cu.email] || {}).following || []).includes(target);
+      btn.textContent = nowFollowing ? 'Following' : 'Follow';
+      btn.classList.toggle('following', nowFollowing);
+    });
+
+    // ✅ Live-refresh the Followers/Following panel if it is open
+    try {
+      var fpOverlay = document.getElementById('follow-panel-overlay');
+      if (fpOverlay && !fpOverlay.classList.contains('hidden')) {
+        window._fpLastHash = '';
+        if (typeof renderFollowPanelList === 'function') renderFollowPanelList();
+      }
+    } catch(e) {}
+  }
+
+  function animateStat(el) {
+    el.style.transition = 'transform 0.2s, color 0.2s';
+    el.style.transform  = 'scale(1.4)';
+    el.style.color      = '#c9f542';
+    setTimeout(function(){ el.style.transform = ''; el.style.color = ''; }, 280);
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  NOTIFICATIONS — badge count + live panel refresh
+  // ══════════════════════════════════════════════════════════
+  function handleNotifsChange(email) {
+    var cu = getCU();
+    if (!cu || cu.email !== email) return;
+
+    try {
+      var notifs = JSON.parse(localStorage.getItem('punahub_notifs_' + email) || '[]');
+      var unread = notifs.filter(function(n){ return !n.read; }).length;
+
+      // ── ALWAYS keep red dot badge in sync — regardless of dedup ──
+      var badge = document.getElementById('notif-badge');
+      if (badge) {
+        badge.textContent   = unread > 9 ? '9+' : (unread > 0 ? String(unread) : '');
+        badge.style.display = unread > 0 ? 'inline-flex' : 'none';
+        if (unread > 0) {
+          // Always animate badge pop so dot is visually obvious
+          badge.style.animation = 'none';
+          void badge.offsetWidth;
+          badge.style.animation = 'badgePop 0.4s cubic-bezier(0.36,0.07,0.19,0.97) both';
+        }
+      }
+
+      // ── Bell shake only for notifications NOT yet toasted ──
+      // We check _toastShownIds but we DON'T block the badge update above
+      if (notifs.length > 0) {
+        var latest = notifs[0];
+        if (latest && latest.id && !_toastShownIds.has(latest.id)) {
+          // Truly new — show full toast (which also shakes bell)
+          showLiveNotifToast(latest, email);
+        } else if (unread > 0) {
+          // Already toasted but still unread — just shake bell silently (no popup)
+          _shakeBellOnly();
+        }
+      }
+
+      // If notif panel is open, refresh its list live
+      var list = document.getElementById('notif-list');
+      if (list) refreshNotifPanelList(email, notifs);
+
+    } catch(e) { console.warn('[punaHub live] notif update error:', e); }
+  }
+
+  // Shakes + glows the bell on new notification
+  function _shakeBellOnly() {
+    var bellBtn = document.getElementById('notif-btn');
+    if (!bellBtn) return;
+    bellBtn.style.color  = '#c9f542';
+    bellBtn.style.filter = 'drop-shadow(0 0 8px rgba(201,245,66,0.9))';
+    bellBtn.style.animation = 'none';
+    void bellBtn.offsetWidth;
+    bellBtn.style.animation = 'bellShake 0.7s ease both, bellGlow 0.7s ease both';
+    setTimeout(function() {
+      bellBtn.style.color='';
+      bellBtn.style.filter='';
+      bellBtn.style.animation='';
+    }, 900);
+  }
+  window._shakeBellOnly = _shakeBellOnly;
+
+  // ── Persist seen IDs across in-session re-renders ────────
+  var _toastShownIds = (function() {
+    var s = new Set();
+    try {
+      var stored = JSON.parse(sessionStorage.getItem('_punaShownNotifIds') || '[]');
+      stored.forEach(function(id){ s.add(id); });
+    } catch(e) {}
+    var _origAdd = s.add.bind(s);
+    s.add = function(id) {
+      _origAdd(id);
+      try {
+        var arr = Array.from(s).slice(-100); // keep last 100
+        sessionStorage.setItem('_punaShownNotifIds', JSON.stringify(arr));
+      } catch(e) {}
+      return s;
+    };
+    return s;
+  })();
+
+  // ══════════════════════════════════════════════════════════
+  //  punaHub POPUP NOTIFICATION SYSTEM  v4
+  //  • Slide-in toast (top)  — all activity types
+  //  • Rich center modal     — follow, like, comment, post
+  //  • Bell shake + badge    — always in sync
+  //  • Vibrate + sound cue   — on mobile
+  //  • Confetti              — on follow
+  //  • Queue                 — multiple notifs stack cleanly
+  // ══════════════════════════════════════════════════════════
+
+  // ── Inject all styles once ────────────────────────────────
+  (function injectPopupStyles() {
+    if (document.getElementById('puna-popup-styles')) return;
+    var s = document.createElement('style');
+    s.id = 'puna-popup-styles';
+    s.textContent = `
+      /* ── Keyframes ── */
+      @keyframes bellShake{0%{transform:rotate(0deg)}10%{transform:rotate(-22deg)}20%{transform:rotate(22deg)}30%{transform:rotate(-18deg)}40%{transform:rotate(18deg)}50%{transform:rotate(-12deg)}60%{transform:rotate(12deg)}70%{transform:rotate(-6deg)}80%{transform:rotate(6deg)}90%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}
+      @keyframes bellGlow{0%{transform:scale(1);opacity:1}30%{transform:scale(1.18);opacity:1}60%{transform:scale(0.97);opacity:1}100%{transform:scale(1);opacity:1}}
+      @keyframes badgePop{0%{transform:scale(1)}35%{transform:scale(1.65)}65%{transform:scale(0.82)}85%{transform:scale(1.08)}100%{transform:scale(1)}}
+      @keyframes pnToastIn{from{opacity:0;transform:translateX(-50%) translateY(-28px) scale(0.92)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}
+      @keyframes pnToastOut{from{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}to{opacity:0;transform:translateX(-50%) translateY(-20px) scale(0.94)}}
+      @keyframes pnModalBackIn{from{opacity:0}to{opacity:1}}
+      @keyframes pnModalBackOut{from{opacity:1}to{opacity:0}}
+      @keyframes pnModalCardIn{from{opacity:0;transform:translate(-50%,-50%) scale(0.80) translateY(30px)}to{opacity:1;transform:translate(-50%,-50%) scale(1) translateY(0)}}
+      @keyframes pnModalCardOut{from{opacity:1;transform:translate(-50%,-50%) scale(1)}to{opacity:0;transform:translate(-50%,-50%) scale(0.88) translateY(18px)}}
+      @keyframes pnAvatarRing{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,0.6)}60%{box-shadow:0 0 0 16px rgba(201,245,66,0)}}
+      @keyframes pnHeartPop{0%{transform:scale(0)}40%{transform:scale(1.4)}70%{transform:scale(0.9)}100%{transform:scale(1)}}
+      @keyframes pnConfetti{0%{opacity:1;transform:translateY(0) rotate(0deg) scale(1)}100%{opacity:0;transform:translateY(-80px) rotate(720deg) scale(0.3)}}
+      @keyframes pnCountUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+      @keyframes pnProgressBar{from{width:100%}to{width:0%}}
+      @keyframes slideDown{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(32px)}}
+      @keyframes pnGlow{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,0)}50%{box-shadow:0 0 24px 4px rgba(201,245,66,0.18)}}
+      @keyframes pnHomeBannerIn{from{opacity:0;transform:translateX(-50%) translateY(-100%)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+      @keyframes pnHomeBannerOut{from{opacity:1;transform:translateX(-50%) translateY(0)}to{opacity:0;transform:translateX(-50%) translateY(-100%)}}
+      @keyframes pnBellRing{0%,100%{transform:rotate(0deg)}15%{transform:rotate(-22deg)}30%{transform:rotate(22deg)}45%{transform:rotate(-16deg)}60%{transform:rotate(16deg)}75%{transform:rotate(-8deg)}90%{transform:rotate(8deg)}}
+      @keyframes pnBannerGlow{0%,100%{box-shadow:0 16px 48px rgba(0,0,0,0.95),0 0 0 1px rgba(201,245,66,0.15)}50%{box-shadow:0 16px 48px rgba(0,0,0,0.95),0 0 0 2px rgba(201,245,66,0.55),0 0 32px rgba(201,245,66,0.2)}}
+      @keyframes pnPopupIn{from{opacity:0;transform:translateX(-50%) translateY(-100%)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+      @keyframes pnPopupOut{from{opacity:1;transform:translateX(-50%) translateY(0)}to{opacity:0;transform:translateX(-50%) translateY(-100%)}}
+      @keyframes pnAvatarPulse{0%,100%{box-shadow:0 0 0 0 rgba(201,245,66,0.55)}60%{box-shadow:0 0 0 10px rgba(201,245,66,0)}}
+      @keyframes pnPopProgress{from{width:100%}to{width:0%}}
+      .pn-home-banner{
+        position:fixed;left:50%;top:0;
+        transform:translateX(-50%);
+        z-index:2147483647;
+        width:min(calc(100vw - 20px),370px);
+        background:linear-gradient(145deg,#1e2230 0%,#141720 100%);
+        border:1.5px solid rgba(201,245,66,0.4);
+        border-top:none;
+        border-radius:0 0 22px 22px;
+        overflow:hidden;
+        cursor:pointer;
+        box-shadow:0 16px 48px rgba(0,0,0,0.95),0 0 0 1px rgba(201,245,66,0.1);
+        animation:pnPopupIn 0.42s cubic-bezier(0.16,1,0.3,1) both, pnBannerGlow 2.2s ease 0.5s infinite;
+      }
+      /* top accent line */
+      .pn-home-banner-accent{height:3px;background:linear-gradient(90deg,#c9f542,#42f5d5,#c9f542);background-size:200% 100%;animation:pnShimmer 2s linear infinite;}
+      @keyframes pnShimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+      /* header row */
+      .pn-home-banner-header{
+        display:flex;align-items:center;gap:6px;
+        padding:8px 14px 6px 12px;
+        border-bottom:1px solid rgba(255,255,255,0.06);
+      }
+      .pn-home-banner-bell{
+        font-size:0.9rem;display:inline-block;
+        animation:pnBellRing 0.8s ease 0.2s both;
+        transform-origin:50% 10%;
+      }
+      .pn-home-banner-header-label{
+        flex:1;font-size:0.62rem;font-weight:800;
+        letter-spacing:0.14em;text-transform:uppercase;
+        color:#c9f542;opacity:0.9;
+      }
+      .pn-home-banner-time{font-size:0.6rem;color:#4b5563;font-weight:500;}
+      .pn-home-banner-close{
+        background:rgba(255,255,255,0.07);border:none;color:#9ca3af;
+        font-size:0.7rem;cursor:pointer;
+        width:20px;height:20px;border-radius:50%;
+        display:flex;align-items:center;justify-content:center;
+        transition:background 0.15s,color 0.15s;flex-shrink:0;line-height:1;
+      }
+      .pn-home-banner-close:hover{background:rgba(255,255,255,0.16);color:#fff;}
+      /* body row */
+      .pn-home-banner-body{display:flex;align-items:center;gap:12px;padding:12px 14px 14px 12px;}
+      /* avatar */
+      .pn-home-banner-av{
+        width:44px;height:44px;border-radius:50%;flex-shrink:0;
+        background:linear-gradient(135deg,#272c38,#1e2230);
+        border:2px solid rgba(201,245,66,0.4);
+        display:flex;align-items:center;justify-content:center;
+        font-size:1.2rem;font-weight:700;color:#c9f542;
+        overflow:hidden;position:relative;
+        animation:pnAvatarPulse 2s ease 0.4s 3;
+      }
+      .pn-home-banner-av img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+      .pn-home-banner-av-badge{
+        position:absolute;bottom:-1px;right:-1px;
+        width:17px;height:17px;border-radius:50%;
+        background:#141720;border:2px solid #1e2230;
+        display:flex;align-items:center;justify-content:center;
+        font-size:0.55rem;
+      }
+      /* text */
+      .pn-home-banner-text{flex:1;min-width:0;}
+      .pn-home-banner-title{
+        font-size:0.84rem;font-weight:700;color:#fff;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        line-height:1.3;
+      }
+      .pn-home-banner-sub{
+        font-size:0.73rem;color:#9ca3af;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+        margin-top:2px;line-height:1.4;
+      }
+      /* type icon */
+      .pn-home-banner-icon{
+        width:36px;height:36px;border-radius:50%;flex-shrink:0;
+        display:flex;align-items:center;justify-content:center;
+        font-size:1rem;border:1px solid rgba(255,255,255,0.08);
+      }
+      /* progress bar */
+      .pn-home-banner-progress{
+        height:3px;
+        border-radius:0 0 22px 22px;
+        animation:pnPopProgress linear forwards;
+      }
+
+      /* ── Toast ── */
+      #notif-btn{overflow:visible!important}
+      #notif-bell-svg{display:inline-block;transform-origin:50% 50%}
+      .pn-toast{
+        position:fixed;left:50%;transform:translateX(-50%);
+        top:18px;
+        width:min(calc(100vw - 20px),360px);
+        z-index:2147483647;
+        background:linear-gradient(135deg,#1c1f2e 0%,#161922 100%);
+        border-radius:16px;
+        padding:12px 14px 10px;
+        cursor:pointer;
+        display:flex;align-items:center;gap:12px;
+        box-shadow:0 12px 40px rgba(0,0,0,0.9),0 0 0 1px rgba(201,245,66,0.22),0 0 20px rgba(201,245,66,0.06);
+        animation:pnToastIn 0.38s cubic-bezier(0.16,1,0.3,1) both;
+        overflow:hidden;
+      }
+      .pn-toast-progress{
+        position:absolute;bottom:0;left:0;height:2.5px;
+        background:linear-gradient(90deg,#c9f542,#42f5d5);
+        border-radius:0 0 0 16px;
+        animation:pnProgressBar linear forwards;
+      }
+      .pn-toast-av{
+        width:46px;height:46px;border-radius:50%;
+        background:#272c38;
+        display:flex;align-items:center;justify-content:center;
+        font-size:1.35rem;font-weight:700;color:#c9f542;
+        flex-shrink:0;overflow:hidden;
+        border:2px solid rgba(201,245,66,0.35);
+        position:relative;
+      }
+      .pn-toast-av img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+      .pn-toast-av-badge{
+        position:absolute;bottom:-1px;right:-1px;
+        width:18px;height:18px;border-radius:50%;
+        background:#0d0f14;
+        display:flex;align-items:center;justify-content:center;
+        font-size:0.65rem;border:1.5px solid #1c1f2e;
+      }
+      .pn-toast-body{flex:1;min-width:0;}
+      .pn-toast-name{font-size:0.84rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3;}
+      .pn-toast-msg{font-size:0.75rem;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.4;margin-top:2px;}
+      .pn-toast-time{font-size:0.65rem;color:#4b5563;margin-top:3px;}
+      .pn-toast-icon{
+        width:34px;height:34px;border-radius:50%;
+        background:#23272f;
+        display:flex;align-items:center;justify-content:center;
+        font-size:1rem;flex-shrink:0;
+        border:1px solid rgba(255,255,255,0.06);
+      }
+      .pn-toast-close{
+        background:none;border:none;color:#4b5563;
+        font-size:1rem;cursor:pointer;padding:2px 4px;
+        flex-shrink:0;line-height:1;
+        transition:color 0.15s;
+      }
+      .pn-toast-close:hover{color:#9ca3af;}
+
+      /* ── Modal Backdrop ── */
+      .pn-modal-back{
+        position:fixed;inset:0;z-index:2147483645;
+        background:rgba(5,6,10,0.82);
+        backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+        animation:pnModalBackIn 0.3s ease both;
+      }
+
+      /* ── Modal Card ── */
+      .pn-modal-card{
+        position:fixed;left:50%;top:50%;
+        transform:translate(-50%,-50%);
+        z-index:2147483646;
+        /* Match welcome screen: fills the app frame width like the welcome card */
+        width:min(calc(100vw - 24px), calc(var(--app-w, 390px) - 24px));
+        max-width:380px;
+        background:linear-gradient(160deg,#1e2130 0%,#161922 55%,#12141c 100%);
+        border:1px solid rgba(201,245,66,0.18);
+        border-radius:28px;
+        /* Same vertical padding as welcome card (.container) */
+        padding:36px 28px 28px;
+        text-align:center;
+        box-shadow:0 28px 80px rgba(0,0,0,0.92),0 0 0 1px rgba(201,245,66,0.08),0 0 60px rgba(201,245,66,0.04);
+        animation:pnModalCardIn 0.44s cubic-bezier(0.16,1,0.3,1) both;
+        overflow:hidden;
+      }
+      .pn-modal-label{
+        font-size:0.68rem;font-weight:800;letter-spacing:0.14em;
+        text-transform:uppercase;margin-bottom:16px;opacity:0.75;
+      }
+      /* Avatar — same 100px as .welcome-avatar */
+      .pn-modal-av-wrap{position:relative;display:inline-block;margin-bottom:20px;}
+      .pn-modal-av{
+        width:100px;height:100px;border-radius:50%;
+        display:flex;align-items:center;justify-content:center;
+        font-size:2.5rem;font-weight:700;
+        overflow:hidden;
+        box-shadow:0 0 0 6px rgba(201,245,66,0.12);
+        animation:pnAvatarRing 2s ease 0.4s 3;
+      }
+      .pn-modal-av img{width:100%;height:100%;object-fit:cover;border-radius:50%;}
+      .pn-modal-av-badge{
+        position:absolute;bottom:2px;right:2px;
+        width:30px;height:30px;border-radius:50%;
+        display:flex;align-items:center;justify-content:center;
+        font-size:0.95rem;border:2.5px solid #161922;
+      }
+      /* Title — same 1.85rem as .welcome h2 */
+      .pn-modal-title{
+        font-family:'DM Serif Display',serif;
+        font-size:1.85rem;color:#fff;line-height:1.25;margin-bottom:10px;
+      }
+      .pn-modal-hl{color:#c9f542;}
+      /* Subtitle — same 0.9rem as .welcome p */
+      .pn-modal-sub{font-size:0.9rem;color:#6b7280;line-height:1.6;margin-bottom:20px;}
+      .pn-modal-stat{
+        display:flex;align-items:center;justify-content:center;
+        gap:8px;margin-bottom:22px;
+        background:rgba(201,245,66,0.06);
+        border:1px solid rgba(201,245,66,0.12);
+        border-radius:14px;padding:12px 18px;
+      }
+      .pn-modal-stat-num{
+        font-family:'DM Serif Display',serif;font-size:1.85rem;
+        color:#c9f542;line-height:1;
+        animation:pnCountUp 0.5s cubic-bezier(0.16,1,0.3,1) 0.3s both;
+      }
+      .pn-modal-stat-lbl{font-size:0.85rem;color:#6b7280;font-weight:500;}
+      /* Button — same full-width style as .btn-primary */
+      .pn-modal-btn{
+        width:100%;color:#0d0f14;
+        border:none;border-radius:14px;
+        padding:clamp(12px,3.5vw,16px);
+        font-size:1rem;font-weight:700;cursor:pointer;
+        font-family:'DM Sans',system-ui,sans-serif;
+        letter-spacing:0.02em;
+        transition:transform 0.15s,box-shadow 0.15s;
+        box-shadow:0 4px 20px rgba(201,245,66,0.22);
+      }
+      .pn-modal-btn:active{transform:scale(0.97);}
+      .pn-modal-close-x{
+        position:absolute;top:14px;right:16px;
+        background:rgba(255,255,255,0.07);border:none;border-radius:50%;
+        width:32px;height:32px;color:#6b7280;font-size:1.1rem;
+        cursor:pointer;display:flex;align-items:center;justify-content:center;
+        transition:background 0.15s,color 0.15s;
+      }
+      .pn-modal-close-x:hover{background:rgba(255,255,255,0.13);color:#fff;}
+      .pn-confetti-dot{
+        position:absolute;border-radius:50%;pointer-events:none;
+        animation:pnConfetti ease forwards;
+      }
+      .pn-modal-progress{
+        position:absolute;bottom:0;left:0;height:3px;
+        border-radius:0 0 28px 28px;
+        animation:pnProgressBar linear forwards;
+      }
+    `;
+    document.head.appendChild(s);
+  })();
+
+  // ── Config per notification type ─────────────────────────
+  var PN_CONFIG = {
+    follow:  { icon:'👤', emoji:'👤', label:'New Follower ✦',  accent:'#c9f542', gradient:'linear-gradient(135deg,#c9f542,#42f5d5)', confetti:true,  modalBtn:'Awesome! 🎉',  toastDur:5000, modalDur:8000 },
+    like:    { icon:'❤️', emoji:'❤️', label:'New Like ❤️',     accent:'#ff6b6b', gradient:'linear-gradient(135deg,#ff6b6b,#f542a1)', confetti:false, modalBtn:'Thanks! ❤️',   toastDur:4000, modalDur:6000 },
+    comment: { icon:'💬', emoji:'💬', label:'New Comment 💬',   accent:'#42a1f5', gradient:'linear-gradient(135deg,#42a1f5,#42f5d5)', confetti:false, modalBtn:'See it 💬',    toastDur:4500, modalDur:7000 },
+    post:    { icon:'🎬', emoji:'🎬', label:'New Reel 🎬',      accent:'#f5c842', gradient:'linear-gradient(135deg,#f5c842,#f542a1)', confetti:false, modalBtn:'Watch it 🎬',  toastDur:4000, modalDur:6000 }
+  };
+
+  function showLiveNotifToast(notif, emailHint) {
+    // ── Dedup: never show the same notification twice ──────
+    var notifId = notif && notif.id;
+    if (notifId) {
+      if (_toastShownIds.has(notifId)) return;
+      // Note: ID is added by the wrapper before this is called.
+      // If called directly (not via wrapper), add it here as fallback.
+      _toastShownIds.add(notifId);
+    }
+
+    var userEmail = emailHint || (notif && notif.toEmail) || (getCU() && getCU().email) || null;
+    var name   = (notif && notif.fromNickname) || 'Someone';
+    var avatar = (notif && notif.fromAvatar)   || '';
+    var type   = (notif && notif.type) || 'follow';
+    var cfg    = PN_CONFIG[type] || PN_CONFIG.follow;
+    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+    var msg    = (notif && notif.message) || msgMap[type] || 'new activity';
+
+    // ── 1. Bell glow + badge ───────────────────────────────
+    var badge = document.getElementById('notif-badge');
+    if (badge) {
+      var unread = 1;
+      if (userEmail) {
+        try {
+          var _st = JSON.parse(localStorage.getItem('punahub_notifs_' + userEmail) || '[]');
+          var _uc = _st.filter(function(x){ return !x.read; }).length;
+          if (_uc > 0) unread = _uc;
+        } catch(e) {}
+      }
+      badge.textContent   = unread > 9 ? '9+' : String(unread);
+      badge.style.display = 'inline-flex';
+      badge.style.animation = 'none';
+      void badge.offsetWidth;
+      badge.style.animation = 'badgePop 0.4s cubic-bezier(0.36,0.07,0.19,0.97) both';
+    }
+    var bellBtn = document.getElementById('notif-btn');
+    if (bellBtn) {
+      bellBtn.style.color  = cfg.accent;
+      bellBtn.style.filter = 'drop-shadow(0 0 10px ' + cfg.accent + '99)';
+      bellBtn.style.animation = 'none';
+      void bellBtn.offsetWidth;
+      bellBtn.style.animation = 'bellShake 0.7s ease both, bellGlow 0.7s ease both';
+      setTimeout(function(){ bellBtn.style.color=''; bellBtn.style.filter=''; bellBtn.style.animation=''; }, 900);
+    }
+
+    // ── 2. Vibrate ─────────────────────────────────────────
+    try { if (navigator.vibrate) navigator.vibrate([30, 15, 30]); } catch(e) {}
+
+    // ── 3. OS device notification (if permission granted) ──
+    try {
+      if (window.__punaNotif && window.__punaNotif.isGranted()) {
+        var _osTag  = 'puna-' + (notif && notif.type || 'notif') + '-' + (notif && notif.fromEmail || '');
+        var _osImg  = (avatar && !avatar.startsWith('data:')) ? avatar : '';
+        window.__punaNotif.show(
+          'punaHub — ' + name,
+          msg,
+          _osImg,
+          _osTag
+        );
+      }
+    } catch(_ose) {}
+
+    // ── 4. Slide-in toast (no-op — kept for hook completeness) ──
+    _showPNToast(notif, userEmail, name, avatar, type, msg, cfg);
+    // NOTE: _showHomeBanner is called by the main-notif-bar wrapper instead.
+  }
+
+  // ── HOME BANNER (top-center strip on home/feed page) ────
+  function _showHomeBanner(name, msg, cfg) {
+    // Show on any screen — no guard needed
+
+    // Safe text encoder — no escSafe dependency needed
+    function _esc(s) {
+      return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    var existing = document.getElementById('pn-home-banner');
+    if (existing) { existing.remove(); }
+
+    var el = document.createElement('div');
+    el.className = 'pn-home-banner';
+    el.id = 'pn-home-banner';
+    el.innerHTML =
+      '<div class="pn-home-banner-accent"></div>' +
+      '<div class="pn-home-banner-header">' +
+        '<span class="pn-home-banner-bell">🔔</span>' +
+        '<span class="pn-home-banner-header-label">New Notification</span>' +
+        '<span class="pn-home-banner-time">just now</span>' +
+        '<button class="pn-home-banner-close" aria-label="Close">✕</button>' +
+      '</div>' +
+      '<div class="pn-home-banner-body">' +
+        '<div class="pn-home-banner-av" id="pn-banner-av">' +
+          (cfg.avatarHtml || ('<span>' + _esc((name||'?').charAt(0).toUpperCase()) + '</span>')) +
+          '<div class="pn-home-banner-av-badge">' + (cfg.emoji||'🔔') + '</div>' +
+        '</div>' +
+        '<div class="pn-home-banner-text">' +
+          '<div class="pn-home-banner-title">' + _esc(name) + '</div>' +
+          '<div class="pn-home-banner-sub">' + _esc(msg) + '</div>' +
+        '</div>' +
+        '<div class="pn-home-banner-icon" style="background:' + (cfg.accent||'#c9f542') + '18;border-color:' + (cfg.accent||'#c9f542') + '30">' + (cfg.emoji||'🔔') + '</div>' +
+      '</div>' +
+      '<div class="pn-home-banner-progress" style="background:' + (cfg.gradient||'linear-gradient(90deg,#c9f542,#42f5d5)') + ';animation-duration:4500ms"></div>';
+
+    function dismissBanner() {
+      if (!el.parentNode) return;
+      el.style.animation = 'pnPopupOut 0.28s cubic-bezier(0.4,0,1,1) forwards';
+      setTimeout(function(){ if (el.parentNode) el.remove(); }, 260);
+    }
+
+    el.querySelector('.pn-home-banner-close').addEventListener('click', function(e) {
+      e.stopPropagation(); e.preventDefault(); dismissBanner();
+    });
+    el.addEventListener('click', function() {
+      dismissBanner();
+      if (typeof window.openNotifPanel === 'function') window.openNotifPanel();
+    });
+
+    // Append to body so position:fixed works — not clipped by app-frame overflow:hidden
+    document.body.appendChild(el);
+    setTimeout(dismissBanner, 4500);
+  }
+
+  // ── TOAST ─────────────────────────────────────────────────
+  // Pop-up toast removed — notifications shown via bell badge + main-notif-bar only
+  function _showPNToast(notif, userEmail, name, avatar, type, msg, cfg) { /* no-op */ }
+  function _dismissToast(el) { /* no-op */ }
+
+  // ── CENTER MODAL ──────────────────────────────────────────
+  function _showPNModal(notif, userEmail, name, avatar, type, msg, cfg) {
+    // Remove any existing modal
+    var oldB = document.getElementById('pn-modal-back');
+    var oldC = document.getElementById('pn-modal-card');
+    if (oldB) oldB.remove();
+    if (oldC) oldC.remove();
+
+    // ── Build stat line ────────────────────────────────────
+    var statNum = 1, statLabel = '';
+    try {
+      var fd2 = JSON.parse(localStorage.getItem('punahub_follow') || '{}');
+      var cu2 = getCU();
+      var em2 = userEmail || (cu2 && cu2.email) || '';
+      if (type === 'follow') {
+        statNum   = (fd2[em2] && fd2[em2].followers) ? fd2[em2].followers.length : 1;
+        statLabel = 'follower' + (statNum !== 1 ? 's' : '') + ' total';
+      } else if (type === 'like') {
+        statLabel = 'new like on your reel';
+      } else if (type === 'comment') {
+        statLabel = 'new comment on your reel';
+      } else if (type === 'post') {
+        statLabel = 'new reel posted';
+      }
+    } catch(e) {}
+
+    var statIcon = { follow:'👥', like:'❤️', comment:'💬', post:'🎬' }[type] || '🔔';
+
+    // ── Build modal title ──────────────────────────────────
+    var titleMap = {
+      follow:  '<span class="pn-modal-hl">' + escSafe(name) + '</span><br>is following you!',
+      like:    '<span class="pn-modal-hl">' + escSafe(name) + '</span><br>liked your reel!',
+      comment: '<span class="pn-modal-hl">' + escSafe(name) + '</span><br>commented!',
+      post:    '<span class="pn-modal-hl">' + escSafe(name) + '</span><br>posted a new reel!'
+    };
+    var subMap = {
+      follow:  'Your community is growing 🎉<br>Keep sharing amazing content!',
+      like:    'They loved your content 🔥<br>Keep it up!',
+      comment: '"' + escSafe((notif && notif.commentText) || 'Great content!') + '"',
+      post:    'Check out their latest reel 🎬'
+    };
+
+    var avInner2 = avatar
+      ? '<img src="' + escSafe(avatar) + '" alt="">'
+      : '<span style="color:' + cfg.accent + '">' + escSafe(name.charAt(0).toUpperCase() || '?') + '</span>';
+
+    // Build backdrop
+    var backdrop = document.createElement('div');
+    backdrop.className = 'pn-modal-back';
+    backdrop.id = 'pn-modal-back';
+
+    // Build card
+    var card = document.createElement('div');
+    card.className = 'pn-modal-card';
+    card.id = 'pn-modal-card';
+
+    card.innerHTML =
+      '<button class="pn-modal-close-x" aria-label="Close">✕</button>' +
+      '<div class="pn-modal-label" style="color:' + cfg.accent + '">' + cfg.label + '</div>' +
+      '<div class="pn-modal-av-wrap">' +
+        '<div class="pn-modal-av" style="border:3px solid ' + cfg.accent + ';background:#23272f">' + avInner2 + '</div>' +
+        '<div class="pn-modal-av-badge" style="background:' + cfg.accent + '">' + cfg.emoji + '</div>' +
+      '</div>' +
+      '<div class="pn-modal-title">' + (titleMap[type] || titleMap.follow) + '</div>' +
+      '<div class="pn-modal-sub">' + (subMap[type] || '') + '</div>' +
+      (type !== 'post' ?
+        '<div class="pn-modal-stat">' +
+          '<span style="font-size:1.2rem">' + statIcon + '</span>' +
+          '<span class="pn-modal-stat-num" style="color:' + cfg.accent + '">' + (type === 'follow' ? statNum : '') + '</span>' +
+          '<span class="pn-modal-stat-lbl">' + statLabel + '</span>' +
+        '</div>' : '') +
+      '<button class="pn-modal-btn" style="background:' + cfg.gradient + ';animation:none">' + cfg.modalBtn + '</button>' +
+      '<div class="pn-modal-progress" style="background:' + cfg.gradient + ';animation-duration:' + cfg.modalDur + 'ms"></div>';
+
+    // Confetti for follow
+    if (cfg.confetti) {
+      var cColors = ['#c9f542','#42f5d5','#f5c842','#f542a1','#42a1f5','#fff'];
+      for (var ci = 0; ci < 16; ci++) {
+        var dot = document.createElement('div');
+        dot.className = 'pn-confetti-dot';
+        var sz = 4 + Math.random() * 5;
+        dot.style.cssText =
+          'width:' + sz + 'px;height:' + sz + 'px;' +
+          'left:' + (5 + Math.random() * 90) + '%;' +
+          'top:' + (50 + Math.random() * 40) + 'px;' +
+          'background:' + cColors[ci % cColors.length] + ';' +
+          'animation-delay:' + (Math.random() * 0.6) + 's;' +
+          'animation-duration:' + (0.8 + Math.random() * 0.7) + 's;';
+        card.appendChild(dot);
+      }
+    }
+
+    var _mTimer = null;
+    var _dismissed = false;
+
+    function dismissModal() {
+      if (_dismissed) return;
+      _dismissed = true;
+      clearTimeout(_mTimer);
+      backdrop.style.animation = 'pnModalBackOut 0.25s ease forwards';
+      card.style.animation     = 'pnModalCardOut 0.28s ease forwards';
+      setTimeout(function(){
+        if (backdrop.parentNode) backdrop.remove();
+        if (card.parentNode) card.remove();
+      }, 290);
+    }
+
+    backdrop.addEventListener('click', dismissModal);
+    card.querySelector('.pn-modal-close-x').addEventListener('click', function(e){
+      e.stopPropagation();
+      dismissModal();
+    });
+    card.querySelector('.pn-modal-btn').addEventListener('click', function() {
+      dismissModal();
+      if (typeof openNotifPanel === 'function') openNotifPanel();
+    });
+
+    document.body.appendChild(backdrop);
+    document.body.appendChild(card);
+
+    _mTimer = setTimeout(dismissModal, cfg.modalDur);
+  }
+
+  // Keep backward-compat alias
+  function showFollowerMilestonePopup(notif, userEmail) {
+    // Now handled by _showPNModal inside showLiveNotifToast — no-op here
+  }
+
+  // New-post popup — shows in-app toast when a followed user posts
+  var _shownPostIds = new Set();
+  function showFollowedUserPostToast(nickname, avatar, reel) {
+    if (!nickname || !reel) return;
+    var reelId = reel.id || reel.reelId || '';
+    if (reelId && _shownPostIds.has(reelId)) return;
+    if (reelId) _shownPostIds.add(reelId);
+
+    // Inject keyframes if not yet present
+    if (!document.getElementById('toast-style')) {
+      var s = document.createElement('style'); s.id='toast-style';
+      s.textContent = '@keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(-20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}@keyframes toastOut{from{opacity:1;transform:translateX(-50%) translateY(0)}to{opacity:0;transform:translateX(-50%) translateY(-20px)}}';
+      document.head.appendChild(s);
+    }
+
+    // Remove any existing toast
+    var old = document.getElementById('follow-post-toast');
+    if (old) old.remove();
+
+    var title = reel.title || reel.caption || 'New reel';
+    var av = avatar
+      ? '<img src="' + escSafe(avatar) + '" style="width:38px;height:38px;border-radius:50%;object-fit:cover;border:2px solid #c9f542;flex-shrink:0">'
+      : '<div style="width:38px;height:38px;border-radius:50%;background:#272c38;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0">👤</div>';
+
+    var el = document.createElement('div');
+    el.id  = 'follow-post-toast';
+
+    el.innerHTML =
+      '<div style="display:flex;align-items:center;gap:10px;pointer-events:none">' +
+        av +
+        '<div style="flex:1;min-width:0">' +
+          '<div style="font-size:0.78rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escSafe(nickname) + '</div>' +
+          '<div style="font-size:0.72rem;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escSafe(title) + '</div>' +
+        '</div>' +
+        '<span style="font-size:1.1rem;flex-shrink:0">🎬</span>' +
+        '<button onclick="event.stopPropagation();var t=document.getElementById(\'follow-post-toast\');if(t)t.remove()" style="background:none;border:none;color:#6b7280;font-size:1rem;cursor:pointer;padding:4px;flex-shrink:0;pointer-events:auto">✕</button>' +
+      '</div>';
+
+    el.style.cssText =
+      'position:absolute;' +
+      'top:72px;' +
+      'left:12px;right:12px;' +
+      'background:#161922;' +
+      'border:1px solid rgba(201,245,66,0.28);' +
+      'border-radius:16px;' +
+      'padding:11px 13px;' +
+      'z-index:9998;' +
+      'box-shadow:0 8px 32px rgba(0,0,0,0.65),0 0 0 1px rgba(201,245,66,0.08);' +
+      'animation:toastIn 0.35s cubic-bezier(0.16,1,0.3,1) both;' +
+      'cursor:pointer;' +
+      'overflow:hidden;';
+
+    var frame = document.getElementById('app-frame') || document.body;
+    frame.appendChild(el);
+
+    var _timer = setTimeout(function(){ if (el.parentNode) el.remove(); }, 5000);
+
+    el.addEventListener('click', function(ev) {
+      if (ev.target.tagName === 'BUTTON') return;
+      clearTimeout(_timer);
+      el.remove();
+      if (typeof switchReelTab === 'function') switchReelTab('feed');
+      if (typeof scrollToReel === 'function') {
+        setTimeout(function(){ scrollToReel(reel.id); }, 120);
+      }
+    });
+  }
+
+    function refreshNotifPanelList(email, notifs) {
+    var list = document.getElementById('notif-list');
+    if (!list) return;
+    function fmtAgo(ts) {
+      if (!ts) return '';
+      var diff = Date.now() - ts;
+      if (diff < 60000)  return 'just now';
+      if (diff < 3600000) return Math.floor(diff/60000) + 'm ago';
+      if (diff < 86400000) return Math.floor(diff/3600000) + 'h ago';
+      return Math.floor(diff/86400000) + 'd ago';
+    }
+    if (!notifs.length) {
+      list.innerHTML = '<div style="text-align:center;padding:48px 20px;color:#555">' +
+        '<div style="font-size:2.5rem;margin-bottom:12px">🔔</div>' +
+        '<div style="font-size:0.95rem">No notifications yet</div></div>';
+      return;
+    }
+    list.innerHTML = notifs.map(function(n) {
+      var av = n.fromAvatar
+        ? '<img src="' + n.fromAvatar + '" style="width:42px;height:42px;border-radius:50%;object-fit:cover;border:2px solid #c9f542;flex-shrink:0">'
+        : '<div style="width:42px;height:42px;border-radius:50%;background:#272c38;display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0">👤</div>';
+      var iconMap = { follow: '👤', like: '❤️', comment: '💬' };
+      var ic = iconMap[n.type] || '🔔';
+      return '<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.04)">' +
+        av + '<div style="flex:1;min-width:0">' +
+        '<div style="font-size:0.85rem;color:#e8eaf0;font-weight:600">' + escSafe(n.fromNickname || 'Someone') + '</div>' +
+        '<div style="font-size:0.78rem;color:#9ca3af;margin-top:2px">' + escSafe(n.message || '') + '</div>' +
+        '<div style="font-size:0.7rem;color:#4b5563;margin-top:2px">' + fmtAgo(n.timestamp) + '</div>' +
+        '</div><span style="font-size:1.2rem">' + ic + '</span></div>';
+    }).join('');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  NEW POSTS PILL
+  // ══════════════════════════════════════════════════════════
+  function showNewPill() {
+    if (!pill) return;
+    pill.textContent = pendingNewReels.length === 1 ? '↑ 1 new post' : '↑ ' + pendingNewReels.length + ' new posts';
+    pill.classList.add('show');
+  }
+
+  window.punaLive = window.punaLive || {};
+  // Expose internals so login code can seed the snap and shown-IDs set
+  window.__punaLiveSnap = snap;
+  window.__punaShownNotifIds = _toastShownIds;
+  // ✅ Fix 1+3: Expose functions globally so Supabase block and hub IIFE can cross-call them
+  window.patchReelCard      = patchReelCard;
+  window.showLiveNotifToast = showLiveNotifToast;
+
+  // ── MAIN SCREEN NOTIFICATION MESSAGE DISPLAY ──────────────
+  // When a notification arrives, copy its message onto the main feed screen.
+  var _origShowLiveNotifToast = showLiveNotifToast;
+  var _mainNotifBarTimer = null;
+
+  window.__dismissMainNotifBar = function() {
+    var bar = document.getElementById('main-notif-bar');
+    if (!bar || !bar.classList.contains('visible')) return;
+    clearTimeout(_mainNotifBarTimer);
+    bar.style.animation = 'mainNotifOut 0.32s cubic-bezier(0.4,0,1,1) forwards';
+    setTimeout(function() {
+      bar.classList.remove('visible');
+      bar.style.animation = '';
+    }, 290);
+  };
+
+  function _updateMainNotifBar(notif, name, msg, avatar, cfg) {
+    var bar     = document.getElementById('main-notif-bar');
+    if (!bar) return;
+
+    // Populate avatar
+    var avWrap  = document.getElementById('main-notif-bar-av');
+    var avText  = document.getElementById('main-notif-bar-av-text');
+    if (avWrap) {
+      // Remove any previous img
+      var prevImg = avWrap.querySelector('img');
+      if (prevImg) prevImg.remove();
+      if (avText) avText.style.display = avatar ? 'none' : 'inline';
+      if (avatar) {
+        var img = document.createElement('img');
+        img.src = avatar;
+        img.alt = '';
+        avWrap.appendChild(img);
+        avWrap.style.borderColor = (cfg && cfg.accent) ? cfg.accent + '80' : 'rgba(201,245,66,0.5)';
+      } else {
+        if (avText) {
+          avText.style.display = 'inline';
+          avText.textContent = name ? name.charAt(0).toUpperCase() : '?';
+          avText.style.color = (cfg && cfg.accent) ? cfg.accent : '#c9f542';
+        }
+      }
+    }
+
+    // Emoji
+    var emojiEl = document.getElementById('main-notif-bar-emoji');
+    if (emojiEl) emojiEl.textContent = (cfg && cfg.emoji) ? cfg.emoji : '🔔';
+
+    // Name
+    var nameEl = document.getElementById('main-notif-bar-name');
+    if (nameEl) {
+      nameEl.textContent = name || 'Someone';
+      nameEl.style.color = (cfg && cfg.accent) ? cfg.accent : '#c9f542';
+    }
+
+    // Message
+    var msgEl  = document.getElementById('main-notif-bar-msg');
+    if (msgEl) msgEl.textContent = msg || 'new activity';
+
+    // Border accent
+    var inner = document.getElementById('main-notif-bar-inner');
+    if (inner && cfg && cfg.accent) {
+      inner.style.borderColor = cfg.accent + '70';
+    }
+
+    // Re-trigger animation
+    bar.style.animation = 'none';
+    void bar.offsetWidth;
+    bar.style.animation = 'mainNotifIn 0.38s cubic-bezier(0.16,1,0.3,1) both';
+    bar.classList.add('visible');
+
+    // Auto-dismiss after 7 seconds
+    clearTimeout(_mainNotifBarTimer);
+    _mainNotifBarTimer = setTimeout(window.__dismissMainNotifBar, 7000);
+  }
+
+  // Wrap showLiveNotifToast to also update the main bar
+  // main-notif-bar is now the ONLY banner — no duplicate pn-home-banner
+  window.showLiveNotifToast = function(notif, emailHint) {
+    // ── Dedup at wrapper level — mark BEFORE calling original ─
+    var _nId = notif && notif.id;
+    if (_nId) {
+      if (window.__punaShownNotifIds && window.__punaShownNotifIds.has(_nId)) return;
+      if (window.__punaShownNotifIds) window.__punaShownNotifIds.add(_nId);
+    }
+
+    // ── Guard: only show for current user as recipient ─────
+    var _cuW = window.__punaActiveUser || (typeof currentUser !== 'undefined' ? currentUser : null);
+    var _hint = emailHint || (notif && notif.toEmail);
+    if (_hint && _cuW && _cuW.email !== _hint) return;
+
+    // Call original (bell + badge + slide toast)
+    _origShowLiveNotifToast(notif, emailHint);
+
+    // Mirror to main screen bar (top banner)
+    var name   = (notif && notif.fromNickname) || 'Someone';
+    var avatar = (notif && notif.fromAvatar)   || '';
+    var type   = (notif && notif.type) || 'follow';
+    var cfg    = (typeof PN_CONFIG !== 'undefined' && PN_CONFIG[type]) || (typeof PN_CONFIG !== 'undefined' && PN_CONFIG.follow) || {};
+    var msgMap = { follow:'started following you', like:'liked your reel', comment:'commented on your reel', post:'shared a new reel' };
+    var msg    = (notif && notif.message) || msgMap[type] || 'new activity';
+
+    _updateMainNotifBar(notif, name, msg, avatar, cfg);
+  };
+  // ── WELCOME BAR ───────────────────────────────────────────
+  (function() {
+    function showWelcomeBar(name) {
+      var bar  = document.getElementById('welcome-bar');
+      var nameEl = document.getElementById('welcome-bar-name');
+      var inner  = document.getElementById('welcome-bar-inner');
+      if (!bar) return;
+      if (nameEl) nameEl.textContent = name || 'friend';
+      bar.classList.add('show');
+      inner.style.animation = 'none';
+      void inner.offsetWidth;
+      inner.style.animation = 'welcomeSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) both';
+      // Auto-dismiss after 4 seconds
+      setTimeout(function() {
+        inner.style.animation = 'welcomeSlideOut 0.4s ease forwards';
+        setTimeout(function() { bar.classList.remove('show'); }, 420);
+      }, 4000);
+    }
+
+    // Show on startup with a generic greeting
+    function _tryShow() {
+      var cu = window.__punaActiveUser;
+      var displayName = (cu && (cu.nickname || cu.name || cu.email)) || null;
+      if (displayName && displayName.includes('@')) displayName = displayName.split('@')[0];
+      showWelcomeBar(displayName || 'friend');
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function(){ setTimeout(_tryShow, 800); });
+    } else {
+      setTimeout(_tryShow, 800);
+    }
+
+    // Also show on login with the real user's name
+    var _origOnLogin2 = window.__punaOnLogin;
+    window.__punaOnLogin = function(user) {
+      if (typeof _origOnLogin2 === 'function') _origOnLogin2(user);
+      var n = (user && (user.nickname || user.name || user.email)) || null;
+      if (n && n.includes('@')) n = n.split('@')[0];
+      setTimeout(function(){ showWelcomeBar(n || 'friend'); }, 600);
+    };
+
+    window.showWelcomeBar = showWelcomeBar;
+  })();
+
+  window.punaLive.applyNewPosts = function() {
+    pill && pill.classList.remove('show');
+    if (!pendingNewReels.length) return;
+    var feed = document.getElementById('reel-feed');
+    if (!feed) return;
+    var cu = getCU();
+    if (!cu || typeof buildReelCard !== 'function') {
+      if (typeof renderFeed === 'function') renderFeed();
+      pendingNewReels = [];
+      return;
+    }
+    var empty = document.getElementById('reel-empty');
+    if (empty) empty.classList.add('hidden');
+    pendingNewReels.sort(function(a,b){ return (b.createdAt||0)-(a.createdAt||0); });
+    pendingNewReels.forEach(function(reel) {
+      if (feed.querySelector('.reel-card[data-id="'+reel.id+'"]')) return;
+      var card = buildReelCard(reel);
+      card.style.cssText += ';opacity:0;transform:translateY(-18px);transition:opacity 0.4s,transform 0.4s';
+      feed.insertBefore(card, feed.firstChild);
+      requestAnimationFrame(function(){ requestAnimationFrame(function(){
+        card.style.opacity = '1'; card.style.transform = 'translateY(0)';
+      }); });
+    });
+    pendingNewReels = [];
+    if (typeof setupReelObserver === 'function') setTimeout(setupReelObserver, 150);
+  };
+
+  // ══════════════════════════════════════════════════════════
+  //  HELPERS
+  // ══════════════════════════════════════════════════════════
+  function getCU() {
+    // window.__punaActiveUser is set by initReelScreen() in the main IIFE.
+    // It is the only reliable cross-IIFE source of the logged-in user.
+    try {
+      if (window.__punaActiveUser) return window.__punaActiveUser;
+      // Fallback for edge cases where currentUser is in scope
+      return (typeof currentUser !== 'undefined' && currentUser) ? currentUser : null;
+    } catch(e) { return null; }
+  }
+  function fmtN(n) {
+    if (n >= 1000000) return (n/1000000).toFixed(1)+'M';
+    if (n >= 1000)    return (n/1000).toFixed(1)+'K';
+    return String(n);
+  }
+  function escSafe(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+  function flashSyncDot() {
+    if (!syncDot) return;
+    syncDot.classList.remove('pulse');
+    void syncDot.offsetWidth;
+    syncDot.classList.add('pulse');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  SAFETY-NET POLL — catches any writes we might have missed
+  // ══════════════════════════════════════════════════════════
+  function poll() {
+    var cu = getCU();
+
+    var rv = localStorage.getItem('punahub_reels')  || '[]';
+    var fv = localStorage.getItem('punahub_follow') || '{}';
+    if (rv !== snap.reels)  { var p=snap.reels;  snap.reels=rv;  handleReelsChange(p,rv,false); flashSyncDot(); }
+    if (fv !== snap.follow) { snap.follow=fv; handleFollowChange(fv); flashSyncDot(); }
+
+    if (cu) {
+      var key = 'punahub_notifs_' + cu.email;
+      var nv  = localStorage.getItem(key) || '[]';
+      if (nv !== (snap.notifs[cu.email] || '[]')) {
+        snap.notifs[cu.email] = nv;
+        handleNotifsChange(cu.email);
+        flashSyncDot();
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  BOOT
+  // ══════════════════════════════════════════════════════════
+  function boot() {
+    pill    = document.getElementById('live-new-pill');
+    syncDot = document.getElementById('live-sync-dot');
+
+    // Inject bell-shake styles immediately so _shakeBellOnly() works from first use
+    if (!document.getElementById('bell-shake-style')) {
+      var bs = document.createElement('style');
+      bs.id = 'bell-shake-style';
+      bs.textContent =
+        '@keyframes bellShake{0%{transform:rotate(0deg)}10%{transform:rotate(-22deg)}20%{transform:rotate(22deg)}30%{transform:rotate(-18deg)}40%{transform:rotate(18deg)}50%{transform:rotate(-12deg)}60%{transform:rotate(12deg)}70%{transform:rotate(-6deg)}80%{transform:rotate(6deg)}90%{transform:rotate(-2deg)}100%{transform:rotate(0deg)}}' +
+        '@keyframes bellGlow{0%{transform:scale(1);opacity:1}30%{transform:scale(1.18);opacity:1}60%{transform:scale(0.97);opacity:1}100%{transform:scale(1);opacity:1}}' +
+        '@keyframes badgePop{0%{transform:scale(1)}35%{transform:scale(1.65)}65%{transform:scale(0.82)}85%{transform:scale(1.08)}100%{transform:scale(1)}}' +
+        '@keyframes liveNotifIn{from{opacity:0;transform:translateX(-50%) translateY(-20px) scale(0.94)}to{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}}' +
+        '@keyframes liveNotifOut{from{opacity:1;transform:translateX(-50%) translateY(0) scale(1)}to{opacity:0;transform:translateX(-50%) translateY(-16px) scale(0.94)}}' +
+        '#notif-btn{overflow:visible!important}' +
+        '#notif-bell-svg{display:inline-block;transform-origin:50% 50%}' +
+        '.live-notif-toast{position:fixed;left:50%;transform:translateX(-50%);top:18px;width:min(calc(100vw - 20px),400px);z-index:2147483647;' +
+          'background:#1a1d25;border-radius:14px;padding:11px 14px;cursor:pointer;' +
+          'display:flex;align-items:center;gap:11px;' +
+          'box-shadow:0 8px 32px rgba(0,0,0,0.85),0 0 0 1px rgba(201,245,66,0.18);' +
+          'animation:liveNotifIn 0.32s cubic-bezier(0.16,1,0.3,1) both;}' +
+        '.live-notif-avatar{width:44px;height:44px;border-radius:50%;object-fit:cover;flex-shrink:0;background:#272c38;display:flex;align-items:center;justify-content:center;font-size:1.3rem;overflow:hidden;}' +
+        '.live-notif-avatar img{width:100%;height:100%;border-radius:50%;object-fit:cover;}' +
+        '.live-notif-body{flex:1;min-width:0;}' +
+        '.live-notif-name{font-size:0.82rem;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.3;}' +
+        '.live-notif-msg{font-size:0.74rem;color:#9ca3af;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.4;margin-top:1px;}' +
+        '.live-notif-time{font-size:0.67rem;color:#4b5563;margin-top:2px;}' +
+        '.live-notif-icon{width:32px;height:32px;border-radius:50%;background:#23272f;display:flex;align-items:center;justify-content:center;font-size:0.95rem;flex-shrink:0;}';
+      document.head.appendChild(bs);
+    }
+
+    // Pre-seed _toastShownIds so ALREADY-READ notifications don't ring bell on startup
+    // (Unread ones should still show badge + shake bell after login)
+    try {
+      var cu = getCU();
+      if (cu) {
+        var key = 'punahub_notifs_' + cu.email;
+        var existing = localStorage.getItem(key) || '[]';
+        snap.notifs[cu.email] = existing;
+        JSON.parse(existing).forEach(function(n){ if (n.id && n.read) _toastShownIds.add(n.id); });
+      }
+    } catch(e) {}
+
+    // Re-seed when user logs in after engine is already running
+    window.__punaOnLogin = function(user) {
+      if (!user || !user.email) return;
+      try {
+        var key = 'punahub_notifs_' + user.email;
+        var existing = localStorage.getItem(key) || '[]';
+        var arr; try { arr = JSON.parse(existing); } catch(e) { arr = []; }
+
+        // Only seed READ notifications — unread ones should still trigger bell+badge
+        arr.forEach(function(n){ if (n.id && n.read) _toastShownIds.add(n.id); });
+
+        // ── KEY FIX: set snap to empty string so the next poll() sees a CHANGE
+        // and calls handleNotifsChange, which updates badge + shakes bell
+        snap.notifs[user.email] = '';
+
+        // Also fire immediately right now — don't wait for next poll tick
+        var unread = arr.filter(function(n){ return !n.read; }).length;
+        if (unread > 0) {
+          // Update badge immediately
+          var badge = document.getElementById('notif-badge');
+          if (badge) {
+            badge.textContent = unread > 9 ? '9+' : String(unread);
+            badge.style.display = 'inline-flex';
+            badge.style.animation = 'none';
+            void badge.offsetWidth;
+            badge.style.animation = 'badgePop 0.4s cubic-bezier(0.36,0.07,0.19,0.97) both';
+          }
+          // Shake bell for the newest unread notification
+          var newest = arr.find(function(n){ return !n.read; });
+          if (newest && !_toastShownIds.has(newest.id)) {
+            showLiveNotifToast(newest, user.email);
+          } else {
+            _shakeBellOnly();
+          }
+        }
+      } catch(e) {}
+    };
+
+    pollTimer = setInterval(poll, 200);
+
+    // ── INSTANT: native storage event fires immediately when another tab writes ──
+    // This gives zero-delay notification on same device without waiting for poll
+    window.addEventListener('storage', function(e) {
+      if (!e.key) return;
+      var val = e.newValue || '';
+      if (e.key === 'punahub_reels' || e.key === 'punahub_follow' || e.key.startsWith('punahub_notifs_')) {
+        try { onStorageWrite(e.key, val, true); } catch(err) {}
+      }
+    });
+
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        clearInterval(pollTimer);
+      } else {
+        poll();
+        pollTimer = setInterval(poll, 200);
+      }
+    });
+
+    console.log('[punaHub] Live engine v2 active — instant StorageEvent + BroadcastChannel + 200ms poll');
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+
+})();
+// ══════════════════════════════════════════════════════════
+//  punaHub AUTO-REFRESH ENGINE
+//  Watches every key localStorage key + Supabase cloud data
+//  and refreshes feed, profile, badges, follow counts — all
+//  instantly, with zero page reload needed.
+// ══════════════════════════════════════════════════════════
+(function() {
+  'use strict';
+
+  // ── Debounce helper — prevents rapid-fire refreshes ─────
+  var _timers = {};
+  function debounce(key, fn, ms) {
+    clearTimeout(_timers[key]);
+    _timers[key] = setTimeout(fn, ms || 120);
+  }
+
+  // ── Safe caller — won't crash if function not ready yet ─
+  function safe(fn) {
+    try { if (typeof fn === 'function') fn(); } catch(e) {}
+  }
+  function safeCall(name) {
+    try { if (typeof window[name] === 'function') window[name](); } catch(e) {}
+  }
+
+  // ── Master refresh: updates everything visible on screen ─
+  function refreshAll() {
+    debounce('all', function() {
+      safeCall('renderFeed');
+      safeCall('refreshProfileStats');
+      var cu = window.__punaActiveUser;
+      if (cu && cu.email) {
+        if (typeof window.updateNotifBadge === 'function') window.updateNotifBadge(cu.email);
+        refreshFollowCounts(cu);
+      }
+      refreshAllFollowButtons();
+    }, 120);
+  }
+
+  // ── Refresh follow count numbers on profile screen ──────
+  function refreshFollowCounts(cu) {
+    if (!cu) return;
+    try {
+      var fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}');
+      var profileEmailEl = document.getElementById('profile-email');
+      var viewedEmail = (profileEmailEl && profileEmailEl.textContent && profileEmailEl.textContent !== '—')
+        ? profileEmailEl.textContent.trim() : cu.email;
+      var vd = fd[viewedEmail] || {};
+      var followersEl = document.getElementById('stat-followers');
+      var followingEl = document.getElementById('stat-following');
+      if (followersEl) followersEl.textContent = (vd.followers || []).length;
+      if (followingEl) followingEl.textContent = (vd.following  || []).length;
+    } catch(e) {}
+  }
+
+  // ── Refresh all Follow/Following buttons in DOM ──────────
+  function refreshAllFollowButtons() {
+    try {
+      var cu = window.__punaActiveUser;
+      if (!cu) return;
+      var fd = JSON.parse(localStorage.getItem('punahub_follow') || '{}');
+      var myFollowing = ((fd[cu.email] || {}).following || []);
+      document.querySelectorAll('.follow-btn[data-target], .hub-follow-btn[data-target]').forEach(function(btn) {
+        var target = btn.dataset.target;
+        if (!target) return;
+        // ── Respect button lock set by hubToggleFollow/fp toggle ──
+        if (btn.dataset.lockedUntil && Date.now() < parseInt(btn.dataset.lockedUntil, 10)) {
+          // Locked — restore the confirmed state, ignore stale follow data
+          var locked = btn.dataset.lockedFollowing === '1';
+          btn.textContent = locked ? 'Following' : 'Follow';
+          btn.classList.toggle('following', locked);
+          return;
+        }
+        var nowFollowing = myFollowing.includes(target);
+        btn.textContent = nowFollowing ? 'Following' : 'Follow';
+        btn.classList.toggle('following', nowFollowing);
+      });
+    } catch(e) {}
+  }
+
+  // ── Refresh notification badge + bell ───────────────────
+  function refreshNotifs() {
+    debounce('notifs', function() {
+      var cu = window.__punaActiveUser;
+      if (!cu || !cu.email) return;
+      if (typeof window.updateNotifBadge === 'function') window.updateNotifBadge(cu.email);
+      // Check for new unread notifications and shake bell
+      try {
+        var notifs = JSON.parse(localStorage.getItem('punahub_notifs_' + cu.email) || '[]');
+        var unread = notifs.filter(function(n){ return !n.read; }).length;
+        if (unread > 0) {
+          var badge = document.getElementById('notif-badge');
+          if (badge) {
+            badge.textContent = unread > 9 ? '9+' : String(unread);
+            badge.style.display = 'inline-flex';
+          }
+          if (typeof window._shakeBellOnly === 'function') window._shakeBellOnly();
+        }
+      } catch(e) {}
+    }, 80);
+  }
+
+  // ── Watch native storage events (cross-tab, instant) ────
+  window.addEventListener('storage', function(e) {
+    if (!e.key) return;
+    if (e.key === 'punahub_reels') {
+      debounce('reels', function() { safeCall('renderFeed'); }, 100);
+    }
+    if (e.key === 'punahub_follow') {
+      debounce('follow', function() {
+        refreshFollowCounts(window.__punaActiveUser);
+        refreshAllFollowButtons();
+        safeCall('refreshProfileStats');
+      }, 100);
+    }
+    if (e.key && e.key.startsWith('punahub_notifs_')) {
+      refreshNotifs();
+    }
+  });
+
+  // ── Intercept localStorage.setItem (same-tab, instant) ──
+  // Piggybacks on the existing intercept — just listens via
+  // a secondary BroadcastChannel the live engine already posts to
+  try {
+    var bc2 = new BroadcastChannel('punahub_live_v2');
+    bc2.onmessage = function(e) {
+      if (!e.data || !e.data.key) return;
+      var key = e.data.key;
+      if (key === 'punahub_reels')  debounce('reels',  function() { safeCall('renderFeed'); }, 100);
+      if (key === 'punahub_follow') debounce('follow', function() {
+        refreshFollowCounts(window.__punaActiveUser);
+        refreshAllFollowButtons();
+        safeCall('refreshProfileStats');
+      }, 100);
+      if (key && key.startsWith('punahub_notifs_')) refreshNotifs();
+    };
+  } catch(e) {}
+
+  // ── Supabase Realtime watcher ────────────────────────────
+  // Hooks into window.sb once it's ready and subscribes to
+  // all three tables for instant cloud push notifications
+  function hookSupabaseRealtime() {
+    var sb = window.sb;
+    if (!sb) return false;
+    try {
+      sb.channel('punahub_autorefresh')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_reels' }, function() {
+          debounce('sb_reels', function() { safeCall('renderFeed'); }, 200);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_follows' }, function() {
+          debounce('sb_follow', function() {
+            safeCall('refreshProfileStats');
+            refreshAllFollowButtons();
+          }, 200);
+        })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'punahub_notifs' }, function(payload) {
+          debounce('sb_notifs', function() { refreshNotifs(); }, 80);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_likes' }, function(payload) {
+          debounce('sb_likes', function() {
+            if (!window.sb) return;
+            window.sb.from('punahub_likes').select('reel_id, user_email').then(function(res) {
+              if (res.error || !res.data) return;
+              var reelsArr = window.getReels ? window.getReels() : [];
+              reelsArr.forEach(function(r){ r.likedBy = []; r.likes = 0; });
+              res.data.forEach(function(lk) {
+                var r = reelsArr.find(function(x){ return x.id === lk.reel_id; });
+                if (r) { if (!r.likedBy.includes(lk.user_email)) { r.likedBy.push(lk.user_email); r.likes = (r.likes||0)+1; } }
+              });
+              if (window.__sbData) window.__sbData.reels = reelsArr;
+              try {
+                var lean = reelsArr.map(function(r){ var c=Object.assign({},r); delete c.videoDataURL; delete c.poster; return c; });
+                localStorage.setItem('punahub_reels', JSON.stringify(lean));
+              } catch(e) {}
+              var cu = typeof currentUser !== 'undefined' && currentUser;
+              reelsArr.forEach(function(r) {
+                var btn = document.querySelector('.reel-card[data-id="'+r.id+'"] [data-action="like"]');
+                if (!btn) return;
+                var sp = btn.querySelector('span');
+                var newVal = typeof formatNum === 'function' ? formatNum(r.likes||0) : String(r.likes||0);
+                if (sp && sp.textContent !== newVal) {
+                  sp.textContent = newVal;
+                  sp.style.transition = 'transform 0.2s, color 0.2s';
+                  sp.style.transform = 'scale(1.5)';
+                  sp.style.color = '#c9f542';
+                  setTimeout(function(){ sp.style.transform = ''; sp.style.color = ''; }, 260);
+                }
+                if (cu) {
+                  var nowLiked = !!(r.likedBy||[]).includes(cu.email);
+                  btn.classList.toggle('liked', nowLiked);
+                  var svg = btn.querySelector('svg');
+                  if (svg) svg.setAttribute('fill', nowLiked ? 'currentColor' : 'none');
+                }
+              });
+            });
+          }, 150);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'punahub_comments' }, function(payload) {
+          debounce('sb_comments', function() {
+            if (!window.sb) return;
+            window.sb.from('punahub_comments').select('*').order('created_at', { ascending: true }).then(function(res) {
+              if (res.error || !res.data) return;
+              var reelsArr = window.getReels ? window.getReels() : [];
+              reelsArr.forEach(function(r){ r.comments = []; });
+              res.data.forEach(function(sc) {
+                var r = reelsArr.find(function(x){ return x.id === sc.reel_id; });
+                if (r) r.comments.push({ id: sc.id, parentId: sc.parent_id||null, email: sc.user_email, nickname: sc.user_nickname||'', avatar: sc.user_avatar||'', text: sc.text, likes: sc.likes||0, likedBy: sc.liked_by||[], createdAt: sc.created_at ? new Date(sc.created_at).getTime() : Date.now() });
+              });
+              if (window.__sbData) window.__sbData.reels = reelsArr;
+              try {
+                var lean = reelsArr.map(function(r){ var c=Object.assign({},r); delete c.videoDataURL; delete c.poster; return c; });
+                localStorage.setItem('punahub_reels', JSON.stringify(lean));
+              } catch(e) {}
+              reelsArr.forEach(function(r) {
+                var btn = document.querySelector('.reel-card[data-id="'+r.id+'"] [data-action="comment"]');
+                if (!btn) return;
+                var sp = btn.querySelector('span');
+                var newVal = typeof formatNum === 'function' ? formatNum((r.comments||[]).length) : String((r.comments||[]).length);
+                if (sp && sp.textContent !== newVal) {
+                  sp.textContent = newVal;
+                  sp.style.transition = 'transform 0.2s, color 0.2s';
+                  sp.style.transform = 'scale(1.5)';
+                  sp.style.color = '#42f5d5';
+                  setTimeout(function(){ sp.style.transform = ''; sp.style.color = ''; }, 260);
+                }
+              });
+              if (typeof renderComments === 'function' && typeof currentReelId !== 'undefined' && currentReelId) {
+                renderComments(currentReelId);
+              }
+            });
+          }, 150);
+        })
+        .subscribe();
+      return true;
+    } catch(e) { return false; }
+  }
+
+  // Retry hooking Supabase until it's available
+  var _sbHookTries = 0;
+  var _sbHookTimer = setInterval(function() {
+    if (window.sb || _sbHookTries++ > 20) {
+      hookSupabaseRealtime();
+      clearInterval(_sbHookTimer);
+    }
+  }, 500);
+
+  // ── Fast poll: catches anything missed ──────────────────
+  // Checks every 300ms for any localStorage change not caught
+  // by the intercept (e.g. direct writes by Supabase sync)
+  var _snap = {
+    reels:  localStorage.getItem('punahub_reels')  || '',
+    follow: localStorage.getItem('punahub_follow') || '',
+    notif:  ''
+  };
+
+  setInterval(function() {
+    var cu = window.__punaActiveUser;
+
+    var rv = localStorage.getItem('punahub_reels')  || '';
+    var fv = localStorage.getItem('punahub_follow') || '';
+    if (rv !== _snap.reels)  { _snap.reels  = rv; debounce('reels',  function(){ safeCall('renderFeed'); }, 60); }
+    if (fv !== _snap.follow) { _snap.follow = fv; debounce('follow', function(){
+      refreshFollowCounts(cu); refreshAllFollowButtons(); safeCall('refreshProfileStats');
+    }, 60); }
+
+    if (cu && cu.email) {
+      var nv = localStorage.getItem('punahub_notifs_' + cu.email) || '';
+      if (nv !== _snap.notif) { _snap.notif = nv; refreshNotifs(); }
+    }
+  }, 300);
+
+  // ── On tab becomes visible: full refresh ────────────────
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) {
+      setTimeout(refreshAll, 100);
+    }
+  });
+
+  // ── On login: seed snap and do full refresh ──────────────
+  var _origOnLogin = window.__punaOnLogin;
+  window.__punaOnLogin = function(user) {
+    if (typeof _origOnLogin === 'function') _origOnLogin(user);
+    if (!user || !user.email) return;
+    _snap.notif  = localStorage.getItem('punahub_notifs_' + user.email) || '';
+    _snap.follow = localStorage.getItem('punahub_follow') || '';
+    _snap.reels  = localStorage.getItem('punahub_reels')  || '';
+    setTimeout(refreshAll, 200);
+  };
+
+  console.log('[punaHub] Auto-refresh engine active — storage events + BroadcastChannel + 300ms poll + Supabase Realtime');
+})();
+// ══════════════════════════════════════════════════════════
+//  PING / NETWORK STRENGTH INDICATOR
+//  Measures real latency, lights up 1–4 bars with colour.
+// ══════════════════════════════════════════════════════════
+(function() {
+  var INTERVAL = (window.__punaPerfTier === 'low') ? 15000 : (window.__punaPerfTier === 'mid') ? 8000 : 5000;
+  var pingTimer = null;
+
+  function classify(ms) {
+    if (ms === null)  return { bars: 0, color: '#ef4444', label: 'Offline' };
+    if (ms < 80)      return { bars: 4, color: '#c9f542', label: 'Excellent' };
+    if (ms < 200)     return { bars: 3, color: '#86efac', label: 'Good' };
+    if (ms < 500)     return { bars: 2, color: '#fbbf24', label: 'Fair' };
+    return             { bars: 1, color: '#ef4444', label: 'Poor' };
+  }
+
+  function updateUI(ms) {
+    var el   = document.getElementById('ping-indicator');
+    var msEl = document.getElementById('ping-ms');
+    var bars = ['pb1','pb2','pb3','pb4'].map(function(id){ return document.getElementById(id); });
+    if (!el || !msEl || !bars[0]) return;
+    var info = classify(ms);
+    bars.forEach(function(bar, i) {
+      if (!bar) return;
+      bar.style.background = i < info.bars ? info.color : 'rgba(255,255,255,0.15)';
+      bar.style.opacity    = i < info.bars ? '1' : '0.35';
+    });
+    msEl.style.color = info.color;
+    if (ms === null) {
+      msEl.textContent = '✕';
+      el.title = 'Offline';
+    } else {
+      msEl.textContent = ms + 'ms';
+      el.title = info.label + ' · ' + ms + 'ms';
+    }
+  }
+
+  async function measurePing() {
+    if (!navigator.onLine) { updateUI(null); return; }
+    // Race 3 globally fast, tiny targets — take whichever responds first
+    var targets = [
+      'https://1.1.1.1/favicon.ico',
+      'https://www.gstatic.com/generate_204',
+      'https://www.google.com/favicon.ico'
+    ];
+    var t0 = performance.now();
+    try {
+      await Promise.race(targets.map(function(url) {
+        return fetch(url + '?_=' + Date.now(), { method: 'HEAD', mode: 'no-cors', cache: 'no-store' });
+      }));
+      updateUI(Math.round(performance.now() - t0));
+    } catch(e) {
+      updateUI(null);
+    }
+  }
+
+  function startPing() { measurePing(); pingTimer = setInterval(measurePing, INTERVAL); }
+  function stopPing()  { clearInterval(pingTimer); }
+
+  document.addEventListener('visibilitychange', function() { document.hidden ? stopPing() : startPing(); });
+  window.addEventListener('online',  function() { measurePing(); });
+  window.addEventListener('offline', function() { updateUI(null); });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startPing);
+  } else {
+    startPing();
+  }
+})();
